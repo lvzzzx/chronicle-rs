@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 crc32fast = "1"
+libc = "0.2"
 memmap2 = "0.9"
 
 [dev-dependencies]

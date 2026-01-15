@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::header::{MessageHeader, FLAGS_OFFSET};
 use crate::mmap::MmapFile;
+use crate::notifier::WriterNotifier;
 use crate::segment::{load_index, store_index, SegmentIndex, SEGMENT_SIZE};
 use crate::{Error, Result};
 
@@ -16,6 +17,7 @@ pub struct Queue {
     pub(crate) mmap: Mutex<MmapFile>,
     write_index: AtomicU64,
     current_segment: u64,
+    pub(crate) notifier: WriterNotifier,
 }
 
 pub struct QueueWriter {
@@ -46,12 +48,15 @@ impl Queue {
         } else {
             MmapFile::create(&segment_path, SEGMENT_SIZE)?
         };
+        let readers_dir = path.join("readers");
+        let notifier = WriterNotifier::new(&readers_dir)?;
 
         Ok(Arc::new(Self {
             path,
             mmap: Mutex::new(mmap),
             write_index: AtomicU64::new(index.write_offset),
             current_segment: index.current_segment,
+            notifier,
         }))
     }
 
@@ -97,6 +102,7 @@ impl QueueWriter {
         std::sync::atomic::fence(Ordering::Release);
         mmap.range_mut(reserve as usize + FLAGS_OFFSET, 1)?
             .copy_from_slice(&[1]);
+        self.queue.notifier.notify_all()?;
         Ok(())
     }
 

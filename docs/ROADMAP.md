@@ -8,6 +8,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Phase 1 (Core Storage & Header) completed; ExecPlan in `execplans/phase-1-core-storage.md`.
 - Phase 2 (Single-Writer Append Path) completed; ExecPlan in `execplans/phase-2-single-writer.md`.
 - Phase 3 (Reader Path & Per-Reader Metadata) completed; ExecPlan in `execplans/phase-3-reader-path.md`.
+- Phase 4 (Event Notification) completed; ExecPlan in `execplans/phase-4-event-notification.md`.
 
 ## Phases
 

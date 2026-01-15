@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::header::MessageHeader;
+use crate::notifier::ReaderNotifier;
 use crate::writer::Queue;
 use crate::{Error, Result};
 
@@ -15,6 +16,7 @@ pub struct QueueReader {
     read_offset: u64,
     name: String,
     meta_path: PathBuf,
+    notifier: ReaderNotifier,
 }
 
 impl Queue {
@@ -26,11 +28,13 @@ impl Queue {
         std::fs::create_dir_all(&readers_dir)?;
         let meta_path = readers_dir.join(format!("{name}.meta"));
         let read_offset = load_read_offset(&meta_path)?;
+        let notifier = ReaderNotifier::new(&readers_dir, name)?;
         Ok(QueueReader {
             queue: Arc::clone(self),
             read_offset,
             name: name.to_string(),
             meta_path,
+            notifier,
         })
     }
 }
@@ -78,6 +82,10 @@ impl QueueReader {
 
     pub fn commit(&self) -> Result<()> {
         store_read_offset(&self.meta_path, self.read_offset)
+    }
+
+    pub fn wait(&self) -> Result<()> {
+        self.notifier.wait()
     }
 
     pub fn name(&self) -> &str {
