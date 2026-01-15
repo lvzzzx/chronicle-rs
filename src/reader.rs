@@ -37,37 +37,42 @@ impl Queue {
 
 impl QueueReader {
     pub fn next(&mut self) -> Result<Option<Vec<u8>>> {
-        let mmap = self
-            .queue
-            .mmap
-            .lock()
-            .map_err(|_| Error::Corrupt("mmap lock poisoned"))?;
+        let (header, payload, next_offset) = {
+            let mmap = self
+                .queue
+                .mmap
+                .lock()
+                .map_err(|_| Error::Corrupt("mmap lock poisoned"))?;
 
-        let offset = self.read_offset as usize;
-        if offset + HEADER_SIZE > mmap.len() {
-            return Ok(None);
-        }
+            let offset = self.read_offset as usize;
+            if offset + HEADER_SIZE > mmap.len() {
+                return Ok(None);
+            }
 
-        let mut header_buf = [0u8; 64];
-        header_buf.copy_from_slice(&mmap.as_slice()[offset..offset + HEADER_SIZE]);
-        let header = MessageHeader::from_bytes(&header_buf)?;
+            let mut header_buf = [0u8; 64];
+            header_buf.copy_from_slice(&mmap.as_slice()[offset..offset + HEADER_SIZE]);
+            let header = MessageHeader::from_bytes(&header_buf)?;
 
-        if header.flags & 1 == 0 {
-            return Ok(None);
-        }
+            if header.flags & 1 == 0 {
+                return Ok(None);
+            }
 
-        let payload_len = header.length as usize;
-        let payload_start = offset + HEADER_SIZE;
-        let payload_end = payload_start
-            .checked_add(payload_len)
-            .ok_or(Error::Corrupt("payload length overflow"))?;
-        if payload_end > mmap.len() {
-            return Err(Error::Corrupt("payload length out of bounds"));
-        }
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
 
-        let payload = mmap.as_slice()[payload_start..payload_end].to_vec();
+            let payload_len = header.length as usize;
+            let payload_start = offset + HEADER_SIZE;
+            let payload_end = payload_start
+                .checked_add(payload_len)
+                .ok_or(Error::Corrupt("payload length overflow"))?;
+            if payload_end > mmap.len() {
+                return Err(Error::Corrupt("payload length out of bounds"));
+            }
+
+            let payload = mmap.as_slice()[payload_start..payload_end].to_vec();
+            (header, payload, payload_end)
+        };
         header.validate_crc(&payload)?;
-        self.read_offset = payload_end as u64;
+        self.read_offset = next_offset as u64;
         Ok(Some(payload))
     }
 
