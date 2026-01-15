@@ -110,6 +110,15 @@ impl QueueReader {
         if !next_path.exists() {
             return Ok(false);
         }
+        match std::fs::metadata(&next_path) {
+            Ok(metadata) => {
+                if metadata.len() != crate::segment::SEGMENT_SIZE as u64 {
+                    return Ok(false);
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(err.into()),
+        }
         self.mmap = open_segment(&self.queue.path, next_segment)?;
         self.segment_id = next_segment;
         self.read_offset = 0;

@@ -111,15 +111,17 @@ pub fn load_reader_position(path: &Path) -> Result<ReaderPosition> {
 }
 
 pub fn store_reader_position(path: &Path, position: &ReaderPosition) -> Result<()> {
+    let tmp_path = path.with_extension("meta.tmp");
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open(path)?;
+        .open(&tmp_path)?;
     let mut buf = [0u8; 16];
     buf[0..8].copy_from_slice(&position.segment_id.to_le_bytes());
     buf[8..16].copy_from_slice(&position.offset.to_le_bytes());
     file.write_all(&buf)?;
     file.sync_all()?;
+    std::fs::rename(tmp_path, path)?;
     Ok(())
 }

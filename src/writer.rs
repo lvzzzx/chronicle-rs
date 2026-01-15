@@ -117,6 +117,11 @@ impl QueueWriter {
 
     pub fn flush(&self) -> Result<()> {
         let index_path = self.queue.path.join(INDEX_FILE);
+        let _lock = self
+            .queue
+            .mmap
+            .lock()
+            .map_err(|_| Error::Corrupt("mmap lock poisoned"))?;
         let write_offset = self.queue.write_index.load(Ordering::Acquire);
         let current_segment = self.queue.current_segment.load(Ordering::Acquire);
         let index = SegmentIndex::new(current_segment, write_offset);
