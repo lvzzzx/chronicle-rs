@@ -12,8 +12,8 @@ const INDEX_FILE: &str = "index.meta";
 const HEADER_SIZE: usize = 64;
 
 pub struct Queue {
-    path: PathBuf,
-    mmap: Mutex<MmapFile>,
+    pub(crate) path: PathBuf,
+    pub(crate) mmap: Mutex<MmapFile>,
     write_index: AtomicU64,
     current_segment: u64,
 }
