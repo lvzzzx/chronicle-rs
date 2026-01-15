@@ -56,4 +56,9 @@ impl MmapFile {
     pub fn len(&self) -> usize {
         self.len
     }
+
+    pub fn sync(&self) -> Result<()> {
+        self.file.sync_all()?;
+        Ok(())
+    }
 }

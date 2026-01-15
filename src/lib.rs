@@ -13,3 +13,4 @@ pub mod segment;
 pub mod writer;
 
 pub use error::{Error, Result};
+pub use writer::{Queue, QueueWriter};

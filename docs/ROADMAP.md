@@ -5,7 +5,8 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 ## Current Status
 
 - Phase 0 (Repo Bootstrap) completed.
-- Phase 1 (Core Storage & Header) planned; ExecPlan in `execplans/phase-1-core-storage.md`.
+- Phase 1 (Core Storage & Header) completed; ExecPlan in `execplans/phase-1-core-storage.md`.
+- Phase 2 (Single-Writer Append Path) completed; ExecPlan in `execplans/phase-2-single-writer.md`.
 
 ## Phases
 
