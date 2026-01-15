@@ -1,0 +1,24 @@
+{
+	"name": "Chronicle RS (Linux)",
+	"image": "mcr.microsoft.com/devcontainers/rust:1-1-bullseye",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"rust-lang.rust-analyzer",
+				"tamasfe.even-better-toml",
+				"serayuzgur.crates",
+				"vadimcn.vscode-lldb"
+			]
+		}
+	},
+	"features": {
+		"ghcr.io/devcontainers/features/common-utils:2": {
+			"installZsh": true,
+			"configureZshAsDefaultShell": true,
+			"installOhMyZsh": true
+		}
+	},
+	// strace is critical for debugging eventfd/epoll; hexedit is good for checking mmap files
+	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y strace hexedit",
+	"remoteUser": "vscode"
+}
