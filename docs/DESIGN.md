@@ -23,15 +23,18 @@ Characteristics:
 | **Multi-queue fan-in** | Scales writers linearly and keeps queues isolated. |
 
 ## 3. Message Layout
-### `MessageHeader` (24 bytes, 8-byte aligned)
+### `MessageHeader` (64 bytes, 64-byte aligned)
 ```rust
-#[repr(C, align(8))]
+#[repr(C, align(64))] // Cache-line aligned to prevent false sharing between writer/reader
 struct MessageHeader {
-    length: u32,
-    seq: u64,
-    timestamp_ns: u64,
-    flags: u8, // bit0 = valid (commit flag)
-    _pad: [u8; 7],
+    length: u32,        // 4 bytes
+    seq: u64,           // 8 bytes
+    timestamp_ns: u64,  // 8 bytes
+    flags: u8,          // 1 byte (bit0 = valid/commit)
+    type_id: u16,       // 2 bytes (msg type/schema version)
+    _reserved: u8,      // 1 byte
+    checksum: u32,      // 4 bytes (CRC32 of payload)
+    _pad: [u8; 36],     // 36 bytes (Padding to reach 64 bytes)
 }
 ```
 
@@ -41,7 +44,9 @@ struct MessageHeader {
 3. Flip `flags` → `1` using `store(Ordering::Release)`.
 
 **Read sequence:**
-- Spin until `flags.load(Ordering::Acquire) == 1`.
+1. Read header.
+2. Spin until `flags.load(Ordering::Acquire) == 1`.
+3. If spin duration > `TIMEOUT`, treat as "Stuck Writer" (see Section 4).
 
 ## 4. Concurrency Model
 ### Single writer
