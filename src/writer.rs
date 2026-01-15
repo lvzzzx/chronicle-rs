@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex};
 use crate::header::{MessageHeader, FLAGS_OFFSET};
 use crate::mmap::MmapFile;
 use crate::notifier::WriterNotifier;
-use crate::segment::{load_index, store_index, SegmentIndex, SEGMENT_SIZE};
+use crate::segment::{
+    create_segment, load_index, open_segment, segment_path, store_index, SegmentIndex,
+    SEGMENT_SIZE,
+};
 use crate::{Error, Result};
 
-const SEGMENT_FILE: &str = "000000000.q";
 const INDEX_FILE: &str = "index.meta";
 const HEADER_SIZE: usize = 64;
 
@@ -16,7 +18,7 @@ pub struct Queue {
     pub(crate) path: PathBuf,
     pub(crate) mmap: Mutex<MmapFile>,
     write_index: AtomicU64,
-    current_segment: u64,
+    current_segment: AtomicU64,
     pub(crate) notifier: WriterNotifier,
 }
 
@@ -31,22 +33,16 @@ impl Queue {
 
         let index_path = path.join(INDEX_FILE);
         let index = load_index(&index_path)?;
-        if index.current_segment != 0 {
-            return Err(Error::Unsupported("only segment 0 supported in phase 2"));
-        }
         if index.write_offset as usize > SEGMENT_SIZE {
             return Err(Error::Corrupt("index write_offset exceeds segment size"));
         }
 
-        let segment_path = path.join(SEGMENT_FILE);
+        let current_segment = index.current_segment;
+        let segment_path = segment_path(&path, current_segment);
         let mmap = if segment_path.exists() {
-            let mmap = MmapFile::open(&segment_path)?;
-            if mmap.len() != SEGMENT_SIZE {
-                return Err(Error::Corrupt("segment size mismatch"));
-            }
-            mmap
+            open_segment(&path, current_segment)?
         } else {
-            MmapFile::create(&segment_path, SEGMENT_SIZE)?
+            create_segment(&path, current_segment)?
         };
         let readers_dir = path.join("readers");
         let notifier = WriterNotifier::new(&readers_dir)?;
@@ -55,7 +51,7 @@ impl Queue {
             path,
             mmap: Mutex::new(mmap),
             write_index: AtomicU64::new(index.write_offset),
-            current_segment: index.current_segment,
+            current_segment: AtomicU64::new(current_segment),
             notifier,
         }))
     }
@@ -65,6 +61,11 @@ impl Queue {
             queue: Arc::clone(self),
         }
     }
+
+    pub fn cleanup(&self) -> Result<Vec<u64>> {
+        let current_segment = self.current_segment.load(Ordering::Acquire);
+        crate::retention::cleanup_segments(&self.path, current_segment)
+    }
 }
 
 impl QueueWriter {
@@ -72,24 +73,32 @@ impl QueueWriter {
         let record_len = HEADER_SIZE
             .checked_add(payload.len())
             .ok_or(Error::Unsupported("payload too large"))?;
-        let reserve = self
-            .queue
-            .write_index
-            .fetch_add(record_len as u64, Ordering::AcqRel);
-        let end = reserve
-            .checked_add(record_len as u64)
-            .ok_or(Error::Corrupt("write offset overflow"))?;
+        if record_len > SEGMENT_SIZE {
+            return Err(Error::Unsupported("record exceeds segment size"));
+        }
         let mut mmap = self
             .queue
             .mmap
             .lock()
             .map_err(|_| Error::Corrupt("mmap lock poisoned"))?;
-        if end as usize > mmap.len() {
-            self.queue
-                .write_index
-                .fetch_sub(record_len as u64, Ordering::AcqRel);
-            return Err(Error::Unsupported("segment full"));
-        }
+        let reserve = loop {
+            let current = self.queue.write_index.load(Ordering::Acquire);
+            let end = current
+                .checked_add(record_len as u64)
+                .ok_or(Error::Corrupt("write offset overflow"))?;
+            if end as usize <= SEGMENT_SIZE {
+                if self
+                    .queue
+                    .write_index
+                    .compare_exchange(current, end, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    break current;
+                }
+                continue;
+            }
+            self.roll_segment(&mut mmap)?;
+        };
 
         let checksum = MessageHeader::crc32(payload);
         let header = MessageHeader::new(payload.len() as u32, reserve, 0, 0, checksum);
@@ -109,7 +118,20 @@ impl QueueWriter {
     pub fn flush(&self) -> Result<()> {
         let index_path = self.queue.path.join(INDEX_FILE);
         let write_offset = self.queue.write_index.load(Ordering::Acquire);
-        let index = SegmentIndex::new(self.queue.current_segment, write_offset);
+        let current_segment = self.queue.current_segment.load(Ordering::Acquire);
+        let index = SegmentIndex::new(current_segment, write_offset);
+        store_index(&index_path, &index)?;
+        Ok(())
+    }
+
+    fn roll_segment(&self, mmap: &mut MmapFile) -> Result<()> {
+        mmap.sync()?;
+        let next_segment = self.queue.current_segment.fetch_add(1, Ordering::AcqRel) + 1;
+        let new_mmap = create_segment(&self.queue.path, next_segment)?;
+        *mmap = new_mmap;
+        self.queue.write_index.store(0, Ordering::Release);
+        let index_path = self.queue.path.join(INDEX_FILE);
+        let index = SegmentIndex::new(next_segment, 0);
         store_index(&index_path, &index)?;
         Ok(())
     }

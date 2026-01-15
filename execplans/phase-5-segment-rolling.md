@@ -11,12 +11,12 @@ Phase 5 makes the queue scale beyond a single fixed-size segment. After this cha
 ## Progress
 
 - [x] (2026-01-15 23:55Z) ExecPlan created for Phase 5 segment rolling and retention.
-- [ ] Update segment helpers and metadata structures to support multiple segments and reader positions.
-- [ ] Implement writer rollover logic and index persistence for multi-segment queues.
-- [ ] Implement reader multi-segment traversal and upgraded reader metadata.
-- [ ] Implement retention cleanup based on minimum reader segment.
-- [ ] Add integration tests for rollover, cross-segment reads, and retention behavior.
-- [ ] Run `cargo test` and capture expected outputs.
+- [x] (2026-01-16 00:00Z) Updated segment helpers and reader metadata format for multi-segment positions.
+- [x] (2026-01-16 00:03Z) Implemented writer rollover logic and index persistence for multi-segment queues.
+- [x] (2026-01-16 00:05Z) Implemented reader multi-segment traversal and upgraded reader metadata.
+- [x] (2026-01-16 00:07Z) Implemented retention cleanup based on minimum reader segment.
+- [x] (2026-01-16 00:09Z) Added integration tests for rollover, cross-segment reads, and retention behavior.
+- [x] (2026-01-16 00:11Z) Ran `cargo test`; all tests passed including new rollover/retention coverage.
 
 ## Surprises & Discoveries
 
@@ -33,10 +33,13 @@ None yet. Record any edge cases discovered around trailing padding, segment boun
 - Decision: Retention deletes only segments with ids strictly less than the minimum reader segment id; when no readers exist, retention performs no deletions.
   Rationale: This is the safest default for Phase 5 and aligns with the requirement that all readers must advance before data is reclaimed.
   Date/Author: 2026-01-15, Codex
+- Decision: Guard retention cleanup from deleting the current writer segment if reader metadata is inconsistent.
+  Rationale: A `current_segment` lower than the computed minimum indicates corrupt reader metadata; keeping the active segment avoids data loss while still deleting safe segments.
+  Date/Author: 2026-01-16, Codex
 
 ## Outcomes & Retrospective
 
-Phase 5 not started yet. Update this section as milestones complete.
+Phase 5 is complete. Writers roll to new segments when a record would overflow, readers traverse across segments and persist `{segment_id, offset}`, and retention deletes only segments that every reader has fully left. New integration tests cover rollover and retention behavior, and `cargo test` is green.
 
 ## Context and Orientation
 
@@ -128,3 +131,4 @@ In `src/reader.rs`, update metadata to store and load `ReaderPosition`, accept l
 `src/retention.rs` should depend only on the standard library and `crate::segment` helpers; no new external dependencies are required.
 
 Change note: Initial ExecPlan drafted for Phase 5 (2026-01-15).
+Change note: Updated progress, decisions, and outcomes after implementation and tests (2026-01-16).

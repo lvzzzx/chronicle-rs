@@ -1,10 +1,12 @@
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::header::MessageHeader;
+use crate::mmap::MmapFile;
 use crate::notifier::ReaderNotifier;
+use crate::segment::{
+    load_reader_position, open_segment, segment_path, store_reader_position, ReaderPosition,
+};
 use crate::writer::Queue;
 use crate::{Error, Result};
 
@@ -13,6 +15,8 @@ const READERS_DIR: &str = "readers";
 
 pub struct QueueReader {
     queue: Arc<Queue>,
+    mmap: MmapFile,
+    segment_id: u64,
     read_offset: u64,
     name: String,
     meta_path: PathBuf,
@@ -27,11 +31,18 @@ impl Queue {
         let readers_dir = self.path.join(READERS_DIR);
         std::fs::create_dir_all(&readers_dir)?;
         let meta_path = readers_dir.join(format!("{name}.meta"));
-        let read_offset = load_read_offset(&meta_path)?;
+        let position = load_reader_position(&meta_path)?;
+        let segment_path = segment_path(&self.path, position.segment_id);
+        if !segment_path.exists() {
+            return Err(Error::Corrupt("reader segment missing"));
+        }
+        let mmap = open_segment(&self.path, position.segment_id)?;
         let notifier = ReaderNotifier::new(&readers_dir, name)?;
         Ok(QueueReader {
             queue: Arc::clone(self),
-            read_offset,
+            mmap,
+            segment_id: position.segment_id,
+            read_offset: position.offset,
             name: name.to_string(),
             meta_path,
             notifier,
@@ -41,23 +52,23 @@ impl Queue {
 
 impl QueueReader {
     pub fn next(&mut self) -> Result<Option<Vec<u8>>> {
-        let (header, payload, next_offset) = {
-            let mmap = self
-                .queue
-                .mmap
-                .lock()
-                .map_err(|_| Error::Corrupt("mmap lock poisoned"))?;
-
+        let (header, payload, next_offset) = loop {
             let offset = self.read_offset as usize;
-            if offset + HEADER_SIZE > mmap.len() {
+            if offset + HEADER_SIZE > self.mmap.len() {
+                if self.advance_segment()? {
+                    continue;
+                }
                 return Ok(None);
             }
 
             let mut header_buf = [0u8; 64];
-            header_buf.copy_from_slice(&mmap.as_slice()[offset..offset + HEADER_SIZE]);
+            header_buf.copy_from_slice(&self.mmap.as_slice()[offset..offset + HEADER_SIZE]);
             let header = MessageHeader::from_bytes(&header_buf)?;
 
             if header.flags & 1 == 0 {
+                if header.length == 0 && self.advance_segment()? {
+                    continue;
+                }
                 return Ok(None);
             }
 
@@ -68,12 +79,12 @@ impl QueueReader {
             let payload_end = payload_start
                 .checked_add(payload_len)
                 .ok_or(Error::Corrupt("payload length overflow"))?;
-            if payload_end > mmap.len() {
+            if payload_end > self.mmap.len() {
                 return Err(Error::Corrupt("payload length out of bounds"));
             }
 
-            let payload = mmap.as_slice()[payload_start..payload_end].to_vec();
-            (header, payload, payload_end)
+            let payload = self.mmap.as_slice()[payload_start..payload_end].to_vec();
+            break (header, payload, payload_end);
         };
         header.validate_crc(&payload)?;
         self.read_offset = next_offset as u64;
@@ -81,7 +92,8 @@ impl QueueReader {
     }
 
     pub fn commit(&self) -> Result<()> {
-        store_read_offset(&self.meta_path, self.read_offset)
+        let position = ReaderPosition::new(self.segment_id, self.read_offset);
+        store_reader_position(&self.meta_path, &position)
     }
 
     pub fn wait(&self) -> Result<()> {
@@ -91,26 +103,16 @@ impl QueueReader {
     pub fn name(&self) -> &str {
         &self.name
     }
-}
 
-fn load_read_offset(path: &Path) -> Result<u64> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(err) => return Err(err.into()),
-    };
-    let mut buf = [0u8; 8];
-    file.read_exact(&mut buf)?;
-    Ok(u64::from_le_bytes(buf))
-}
-
-fn store_read_offset(path: &Path, offset: u64) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)?;
-    file.write_all(&offset.to_le_bytes())?;
-    file.sync_all()?;
-    Ok(())
+    fn advance_segment(&mut self) -> Result<bool> {
+        let next_segment = self.segment_id + 1;
+        let next_path = segment_path(&self.queue.path, next_segment);
+        if !next_path.exists() {
+            return Ok(false);
+        }
+        self.mmap = open_segment(&self.queue.path, next_segment)?;
+        self.segment_id = next_segment;
+        self.read_offset = 0;
+        Ok(true)
+    }
 }

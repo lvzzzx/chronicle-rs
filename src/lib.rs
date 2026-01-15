@@ -9,6 +9,7 @@ pub mod mmap;
 pub mod merge;
 pub mod notifier;
 pub mod reader;
+pub mod retention;
 pub mod segment;
 pub mod writer;
 
