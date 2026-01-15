@@ -25,6 +25,7 @@ fn append_two_messages_and_recover() {
 
     writer.append(payload_a).expect("append alpha");
     writer.append(payload_b).expect("append bravo");
+    writer.flush().expect("flush index");
 
     let segment_path = queue_path.join("000000000.q");
     let mmap = MmapFile::open(&segment_path).expect("mmap open");

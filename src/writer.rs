@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::header::MessageHeader;
+use crate::header::{MessageHeader, FLAGS_OFFSET};
 use crate::mmap::MmapFile;
 use crate::segment::{load_index, store_index, SegmentIndex, SEGMENT_SIZE};
 use crate::{Error, Result};
@@ -87,9 +87,7 @@ impl QueueWriter {
         }
 
         let checksum = MessageHeader::crc32(payload);
-        let mut header = MessageHeader::new(payload.len() as u32, reserve, 0, 0, checksum);
-        header.flags = 0;
-
+        let header = MessageHeader::new(payload.len() as u32, reserve, 0, 0, checksum);
         let header_bytes = header.to_bytes();
         mmap.range_mut(reserve as usize, HEADER_SIZE)?
             .copy_from_slice(&header_bytes);
@@ -97,13 +95,15 @@ impl QueueWriter {
             .copy_from_slice(payload);
 
         std::sync::atomic::fence(Ordering::Release);
-        header.flags = 1;
-        let committed = header.to_bytes();
-        mmap.range_mut(reserve as usize, HEADER_SIZE)?
-            .copy_from_slice(&committed);
+        mmap.range_mut(reserve as usize + FLAGS_OFFSET, 1)?
+            .copy_from_slice(&[1]);
+        Ok(())
+    }
 
+    pub fn flush(&self) -> Result<()> {
         let index_path = self.queue.path.join(INDEX_FILE);
-        let index = SegmentIndex::new(self.queue.current_segment, end);
+        let write_offset = self.queue.write_index.load(Ordering::Acquire);
+        let index = SegmentIndex::new(self.queue.current_segment, write_offset);
         store_index(&index_path, &index)?;
         Ok(())
     }

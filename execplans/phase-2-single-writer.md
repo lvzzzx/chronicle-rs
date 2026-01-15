@@ -28,10 +28,13 @@ No surprises yet. Record any misalignment, durability, or atomic ordering issues
 - Decision: The commit flag is bit 0 of `MessageHeader.flags`, set with `store` and read with `load` semantics modeled using standard Rust atomic ordering around writes.
   Rationale: Mirrors the design document and provides a clear, testable definition of visibility.
   Date/Author: 2026-01-15, Codex
+- Decision: Persist `index.meta` only on explicit `flush` rather than every append.
+  Rationale: Avoids fsync/file I/O in the hot path and matches the low-latency design intent.
+  Date/Author: 2026-01-15, Codex
 
 ## Outcomes & Retrospective
 
-Phase 2 is complete: single-writer append works end-to-end with index persistence and recovery, and tests are green.
+Phase 2 is complete: single-writer append works end-to-end with index persistence on `flush`, and tests are green.
 
 ## Context and Orientation
 
@@ -128,4 +131,4 @@ In `src/segment.rs`, define:
     pub fn load_index(path: &Path) -> crate::Result<SegmentIndex>;
     pub fn store_index(path: &Path, index: &SegmentIndex) -> crate::Result<()>;
 
-Change note: Updated Progress, Outcomes, and Artifacts after implementing Phase 2 and running tests (2026-01-15).
+Change note: Updated Decision Log and Outcomes to record index persistence moving to explicit flush (2026-01-15).

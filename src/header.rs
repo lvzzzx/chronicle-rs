@@ -14,6 +14,8 @@ pub struct MessageHeader {
     pub _pad: [u8; 36],
 }
 
+pub const FLAGS_OFFSET: usize = 20;
+
 impl MessageHeader {
     pub fn new(length: u32, seq: u64, timestamp_ns: u64, type_id: u16, checksum: u32) -> Self {
         Self {
