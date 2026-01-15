@@ -10,10 +10,13 @@ This phase makes the project tangible: a byte-level message header that is prova
 
 ## Progress
 
-- [x] (2026-01-15 00:00Z) ExecPlan created for Phase 1.
-- [ ] (2026-01-15 00:00Z) Define `MessageHeader` layout and serialization with 64-byte enforcement.
-- [ ] (2026-01-15 00:00Z) Implement mmap file creation/opening and safe slice access.
-- [ ] (2026-01-15 00:00Z) Add tests for size, alignment, CRC, and round-trip append/read.
+- [x] (2026-01-15 21:10Z) ExecPlan created for Phase 1.
+- [x] (2026-01-15 21:25Z) Defined `MessageHeader` layout, serialization, and CRC helpers.
+- [x] (2026-01-15 21:30Z) Implemented mmap file creation/opening and safe slice access.
+- [x] (2026-01-15 21:35Z) Added tests for size/alignment, CRC, and round-trip append/read.
+- [x] (2026-01-15 21:50Z) Ran `cargo test`; fixed Default derive failure for `[u8; 36]`.
+- [x] (2026-01-15 22:05Z) Re-ran `cargo test`; header size was 128 due to padding, reordered fields to reach 64 bytes.
+- [x] (2026-01-15 22:15Z) Re-ran `cargo test`; all unit and integration tests passed.
 
 ## Surprises & Discoveries
 
@@ -30,7 +33,7 @@ No surprises yet. Update this section if any memory-mapping quirks, alignment is
 
 ## Outcomes & Retrospective
 
-Not started. This will be updated after tests pass and the round-trip scenario is demonstrated.
+Core header and mmap scaffolding are implemented along with unit and integration tests. Tests failed initially due to `Default` not being implemented for `[u8; 36]`, which was resolved by removing the `Default` derive on `MessageHeader`. A subsequent test run revealed the header size was 128 because of implicit padding; the struct fields were reordered to produce a 64-byte size while keeping serialization offsets explicit. The latest test run is green, so Phase 1 is complete.
 
 ## Context and Orientation
 
@@ -88,7 +91,31 @@ These steps are safe to rerun. If a test fails due to an incorrect file size or 
 
 ## Artifacts and Notes
 
-Not started. After implementation, include the `cargo test` output snippet and any short diffs that capture header layout or mmap functions.
+`cargo test` initially failed with:
+
+    error[E0277]: the trait bound `[u8; 36]: Default` is not satisfied
+      --> src/header.rs:13:5
+
+This was resolved by removing the `Default` derive on `MessageHeader`. Re-run tests to record a green transcript here.
+
+A subsequent `cargo test` failed with:
+
+    assertion `left == right` failed
+      left: 128
+     right: 64
+
+This was resolved by reordering fields in `MessageHeader` to eliminate implicit padding while preserving the serialized offsets.
+
+Green `cargo test` run:
+
+    running 2 tests
+    test header::tests::crc_matches_known_payload ... ok
+    test header::tests::header_size_and_alignment ... ok
+    test result: ok. 2 passed; 0 failed
+
+    running 1 test
+    test append_read_round_trip ... ok
+    test result: ok. 1 passed; 0 failed
 
 ## Interfaces and Dependencies
 
@@ -135,4 +162,4 @@ In `src/mmap.rs`, define:
 
 Note: The struct layout test should verify `MessageHeader` size and alignment, but all I/O should use `to_bytes` and `from_bytes` to avoid unsafe casts.
 
-Change note: Initial ExecPlan drafted on 2026-01-15 to cover Phase 1 scope.
+Change note: Updated Progress and Outcomes with a passing test run and added a green transcript snippet (2026-01-15).

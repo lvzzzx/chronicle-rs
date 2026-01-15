@@ -9,3 +9,8 @@ description = "Chronicle-style low-latency persisted messaging queue"
 path = "src/lib.rs"
 
 [dependencies]
+crc32fast = "1"
+memmap2 = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
