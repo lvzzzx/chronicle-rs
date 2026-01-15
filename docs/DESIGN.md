@@ -180,6 +180,39 @@ Reader merges by:
 
 Supports deterministic, timestamp-ordered message processing.
 
+### HFT scenario mapping
+- Market-data ingest: one queue per venue/feed; a single fan-in reader merges by `timestamp_ns` for a unified stream.
+- Order routing: strategy writes to one queue; multiple gateway readers consume with distinct reader names (multi-subscriber).
+- Strategy fan-out: feed handlers write per-feed queues; each strategy builds its own fan-in reader and keeps independent progress.
+- Risk aggregation: each strategy writes fills/positions to its own queue; risk service merges them by timestamp.
+- Compliance/audit: each service writes to its own queue; recorder merges into a single ordered audit stream.
+- Replay/backtest: playback processes write historical feeds to per-feed queues with recorded timestamps; fan-in reproduces a deterministic stream.
+
+### Queue discovery for multi-process fan-in
+Order routing and other HFT control-plane services are typically long-lived processes that must attach to many strategy queues without restart. Discovery is therefore required to add new sources dynamically while keeping writers isolated (one writer per queue).
+
+**Proposed approach (directory + READY marker):**
+- **Directory convention:** all strategy queues live under a shared root, e.g. `orders/strategies/<strategy_id>/`.
+- **Startup handshake:** strategy initializes its queue via `Queue::open`, then creates a `READY` file using atomic rename (`READY.tmp` → `READY`). The file should include a minimal version payload (for example `version=1` on the first line, or a small JSON blob like `{"version":1,"pid":123,"created_at":"..."}`).
+- **Router discovery:** establish a cross-platform filesystem watcher first (use a library such as `notify` rather than raw `inotify`), then scan for subdirectories containing `READY`, then process any events that arrived during the scan. The router must deduplicate so a queue discovered by scan and watch is only attached once.
+- **Attach reader:** open the queue and create a `QueueReader` with a unique router name (e.g. `router-<pid>`), then register it with the fan-in merge layer. If the READY version is newer than the router supports, skip the queue and log a warning rather than crashing.
+
+**Removal / shutdown:** directory deletion is the removal signal. When a queue directory is removed, the router must drop the corresponding `QueueReader` to release mmaps and file descriptors. Leaving idle readers in a long-lived router is not acceptable due to fd exhaustion risk.
+
+**Safety / failure modes:**
+- If a strategy crashes before `READY`, the router never attaches.
+- If it crashes after `READY`, the router can still consume committed data.
+- Router restart re-establishes the watcher, rescans, and resumes from per-reader metadata.
+- Segment size checks still guard against partially initialized files.
+
+**Alternatives (not chosen yet):**
+- Manifest file (`queues.json`) with atomic updates.
+- Control queue (registry bus) for announcements.
+- Periodic scan only (simplest, slower to detect).
+
+**Open questions for review:**
+- Is a manifest-based option needed for multi-host deployments, or is filesystem discovery sufficient?
+
 ## 10. Memory Model Summary
 | Operation | Ordering | Reason |
 |------------|-----------|--------|
