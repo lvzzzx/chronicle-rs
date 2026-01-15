@@ -13,6 +13,11 @@ use crate::{Error, Result};
 const HEADER_SIZE: usize = 64;
 const READERS_DIR: &str = "readers";
 
+pub struct QueueMessage {
+    pub header: MessageHeader,
+    pub payload: Vec<u8>,
+}
+
 pub struct QueueReader {
     queue: Arc<Queue>,
     mmap: MmapFile,
@@ -52,6 +57,10 @@ impl Queue {
 
 impl QueueReader {
     pub fn next(&mut self) -> Result<Option<Vec<u8>>> {
+        Ok(self.next_message()?.map(|message| message.payload))
+    }
+
+    pub fn next_message(&mut self) -> Result<Option<QueueMessage>> {
         let (header, payload, next_offset) = loop {
             let offset = self.read_offset as usize;
             if offset + HEADER_SIZE > self.mmap.len() {
@@ -88,7 +97,7 @@ impl QueueReader {
         };
         header.validate_crc(&payload)?;
         self.read_offset = next_offset as u64;
-        Ok(Some(payload))
+        Ok(Some(QueueMessage { header, payload }))
     }
 
     pub fn commit(&self) -> Result<()> {

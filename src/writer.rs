@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::header::{MessageHeader, FLAGS_OFFSET};
 use crate::mmap::MmapFile;
@@ -70,6 +71,15 @@ impl Queue {
 
 impl QueueWriter {
     pub fn append(&self, payload: &[u8]) -> Result<()> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Error::Unsupported("system time before UNIX epoch"))?;
+        let timestamp_ns = u64::try_from(timestamp.as_nanos())
+            .map_err(|_| Error::Unsupported("system time exceeds timestamp range"))?;
+        self.append_with_timestamp(payload, timestamp_ns)
+    }
+
+    pub fn append_with_timestamp(&self, payload: &[u8], timestamp_ns: u64) -> Result<()> {
         let record_len = HEADER_SIZE
             .checked_add(payload.len())
             .ok_or(Error::Unsupported("payload too large"))?;
@@ -101,7 +111,7 @@ impl QueueWriter {
         };
 
         let checksum = MessageHeader::crc32(payload);
-        let header = MessageHeader::new(payload.len() as u32, reserve, 0, 0, checksum);
+        let header = MessageHeader::new(payload.len() as u32, reserve, timestamp_ns, 0, checksum);
         let header_bytes = header.to_bytes();
         mmap.range_mut(reserve as usize, HEADER_SIZE)?
             .copy_from_slice(&header_bytes);

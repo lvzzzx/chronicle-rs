@@ -11,10 +11,10 @@ Phase 6 lets a single reader consume messages from multiple queue directories in
 ## Progress
 
 - [x] (2026-01-15 22:30Z) ExecPlan created for Phase 6 multi-queue fan-in (Fan-In Reader).
-- [ ] Update writer timestamps and add explicit timestamp append helper.
-- [ ] Extend `QueueReader` to return headers with payloads for merge logic.
-- [ ] Implement `FanInReader` fan-in merge in `src/merge.rs`.
-- [ ] Add fan-in ordering tests and run `cargo test`.
+- [x] (2026-01-15 23:10Z) Update writer timestamps and add explicit timestamp append helper.
+- [x] (2026-01-15 23:10Z) Extend `QueueReader` to return headers with payloads for merge logic.
+- [x] (2026-01-15 23:12Z) Implement `FanInReader` fan-in merge in `src/merge.rs`.
+- [x] (2026-01-15 23:14Z) Add fan-in ordering tests and run `cargo test`.
 
 ## Surprises & Discoveries
 
@@ -37,7 +37,7 @@ None yet. Capture any tricky ordering edge cases or metadata/segment interaction
 
 ## Outcomes & Retrospective
 
-Not started yet. Update this section as milestones complete.
+Phase 6 delivered: writer timestamps are real-time or injected for tests, the reader exposes headers, and fan-in merges by `(timestamp_ns, source_index)`. Tests validate merge order and empty behavior.
 
 ## Context and Orientation
 
