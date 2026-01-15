@@ -169,11 +169,11 @@ impl QueueReader {
 }
 ```
 
-## 9. Multi-Queue Fan-In (Order Bus)
+## 9. Multi-Queue Fan-In (Fan-In Reader)
 **Pattern:** many writers → one reader.
 Each writer appends to its own queue directory.
 
-Reader merges by:
+Fan-in reader merges by:
 1. Peeking each queue’s next header.
 2. Selecting the smallest `timestamp_ns`.
 3. Processing and advancing that reader.

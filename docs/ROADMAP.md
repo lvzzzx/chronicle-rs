@@ -37,7 +37,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Deliverables: segment rollover at size boundary, index persistence, safe cleanup.
 - Validation: read/write across segments; retention only after all readers pass.
 
-### Phase 6 — Multi-Queue Fan-In (Order Bus)
+### Phase 6 — Multi-Queue Fan-In (Fan-In Reader)
 - Deliverables: merge logic across queues by timestamp.
 - Validation: deterministic ordering across multiple writers.
 
