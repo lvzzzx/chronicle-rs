@@ -41,10 +41,14 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Deliverables: merge logic across queues by timestamp.
 - Validation: deterministic ordering across multiple writers.
 
-### Phase 7 — Hardening & Benchmarks
+### Phase 7 — Queue Discovery for Multi-Process Fan-In
+- Deliverables: directory + READY marker protocol; cross-platform watcher; attach/detach logic.
+- Validation: router attaches/detaches queues dynamically without restart; handles create/delete races safely.
+
+### Phase 8 — Hardening & Benchmarks
 - Deliverables: stress tests, soak tests, perf benchmarks.
 - Validation: stable throughput/latency and test coverage of edge cases.
 
-### Phase 8 — Docs & Operational Guidance
+### Phase 9 — Docs & Operational Guidance
 - Deliverables: updated design docs, usage examples, configuration guidance.
 - Validation: docs reflect actual behavior and configuration paths.
