@@ -5,14 +5,15 @@ use crate::Error;
 #[cfg(target_os = "linux")]
 mod platform {
     use std::collections::HashMap;
-    use std::ffi::{CStr, CString};
+    use std::ffi::CString;
     use std::fs;
     use std::io::Read;
     use std::mem;
     use std::os::unix::io::RawFd;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
-    use std::thread;
+    use std::thread::{self, JoinHandle};
     use std::time::Duration;
 
     use libc::{
@@ -75,6 +76,7 @@ mod platform {
 
     pub struct WriterNotifier {
         readers: Arc<Mutex<HashMap<String, RawFd>>>,
+        inotify: InotifyWorker,
     }
 
     impl WriterNotifier {
@@ -82,30 +84,57 @@ mod platform {
             fs::create_dir_all(readers_dir)?;
             let readers = Arc::new(Mutex::new(HashMap::new()));
             scan_existing(readers_dir, &readers)?;
-            spawn_inotify(readers_dir.to_path_buf(), Arc::clone(&readers))?;
-            Ok(Self { readers })
+            let inotify = InotifyWorker::new(readers_dir.to_path_buf(), Arc::clone(&readers))?;
+            Ok(Self { readers, inotify })
         }
 
         pub fn notify_all(&self) -> Result<()> {
-            let fds = {
+            let entries = {
                 let guard = self
                     .readers
                     .lock()
                     .map_err(|_| Error::Corrupt("reader notifier lock poisoned"))?;
-                guard.values().copied().collect::<Vec<_>>()
+                guard
+                    .iter()
+                    .map(|(name, fd)| (name.clone(), *fd))
+                    .collect::<Vec<_>>()
             };
             let mut value: u64 = 1;
-            for fd in fds {
+            let mut stale = Vec::new();
+            for (name, fd) in entries {
                 let res = unsafe { write(fd, &mut value as *mut u64 as *mut _, mem::size_of::<u64>()) };
                 if res < 0 {
                     let err = std::io::Error::last_os_error();
-                    if err.raw_os_error() == Some(libc::EAGAIN) {
-                        continue;
+                    if err.raw_os_error() != Some(libc::EAGAIN) {
+                        stale.push(name);
                     }
-                    return Err(Error::Io(err));
+                }
+            }
+            if !stale.is_empty() {
+                if let Ok(mut guard) = self.readers.lock() {
+                    for name in stale {
+                        if let Some(fd) = guard.remove(&name) {
+                            unsafe {
+                                libc::close(fd);
+                            }
+                        }
+                    }
                 }
             }
             Ok(())
+        }
+    }
+
+    impl Drop for WriterNotifier {
+        fn drop(&mut self) {
+            self.inotify.stop();
+            if let Ok(mut guard) = self.readers.lock() {
+                for (_name, fd) in guard.drain() {
+                    unsafe {
+                        libc::close(fd);
+                    }
+                }
+            }
         }
     }
 
@@ -131,7 +160,14 @@ mod platform {
         Ok(())
     }
 
-    fn spawn_inotify(readers_dir: PathBuf, readers: Arc<Mutex<HashMap<String, RawFd>>>) -> Result<()> {
+    struct InotifyWorker {
+        fd: Option<RawFd>,
+        shutdown: Arc<AtomicBool>,
+        handle: Option<JoinHandle<()>>,
+    }
+
+    impl InotifyWorker {
+        fn new(readers_dir: PathBuf, readers: Arc<Mutex<HashMap<String, RawFd>>>) -> Result<Self> {
         let dir_cstr = CString::new(readers_dir.to_string_lossy().as_bytes())
             .map_err(|_| Error::Unsupported("readers path contains NUL"))?;
         let inotify_fd = unsafe { inotify_init1(IN_CLOEXEC) };
@@ -146,29 +182,62 @@ mod platform {
             }
             return Err(Error::Io(std::io::Error::last_os_error()));
         }
-
-        thread::spawn(move || {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let thread_shutdown = Arc::clone(&shutdown);
+        let handle = thread::spawn(move || {
             let mut buffer = vec![0u8; 4096];
+            let mut pfd = pollfd {
+                fd: inotify_fd,
+                events: POLLIN,
+                revents: 0,
+            };
+            let header_size = mem::size_of::<inotify_event>();
             loop {
-                let len = unsafe { read(inotify_fd, buffer.as_mut_ptr() as *mut _, buffer.len()) };
-                if len < 0 {
+                if thread_shutdown.load(Ordering::Acquire) {
+                    break;
+                }
+                let res = unsafe { poll(&mut pfd, 1, 100) };
+                if res < 0 {
                     let err = std::io::Error::last_os_error();
                     if err.kind() == std::io::ErrorKind::Interrupted {
                         continue;
                     }
+                    if thread_shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
                     thread::sleep(Duration::from_millis(50));
                     continue;
                 }
+                if res == 0 {
+                    continue;
+                }
+                if (pfd.revents & POLLIN) == 0 {
+                    continue;
+                }
+                let len = unsafe { read(inotify_fd, buffer.as_mut_ptr() as *mut _, buffer.len()) };
+                if len <= 0 {
+                    if thread_shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
+                    continue;
+                }
                 let mut offset = 0usize;
-                while offset < len as usize {
-                    let event_ptr = unsafe { buffer.as_ptr().add(offset) as *const inotify_event };
-                    let event = unsafe { &*event_ptr };
-                    let name_len = event.len as usize;
+                while offset + header_size <= len as usize {
+                    let header = &buffer[offset..offset + header_size];
+                    let (mask, name_len) = match parse_event_header(header) {
+                        Some(header) => header,
+                        None => break,
+                    };
+                    let name_len = name_len as usize;
+                    let name_start = offset + header_size;
+                    let name_end = name_start.saturating_add(name_len);
+                    if name_end > len as usize {
+                        break;
+                    }
                     let name = if name_len > 0 {
-                        let name_ptr = unsafe { buffer.as_ptr().add(offset + mem::size_of::<inotify_event>()) };
-                        unsafe { CStr::from_ptr(name_ptr as *const i8) }
-                            .to_string_lossy()
-                            .into_owned()
+                        let name_bytes = &buffer[name_start..name_end];
+                        let nul = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+                        String::from_utf8_lossy(&name_bytes[..nul]).into_owned()
                     } else {
                         String::new()
                     };
@@ -176,21 +245,46 @@ mod platform {
                     if name.ends_with(EFD_SUFFIX) {
                         let reader_name = name.trim_end_matches(EFD_SUFFIX);
                         let path = readers_dir.join(&name);
-                        if (event.mask & (IN_CREATE | IN_MOVED_TO)) != 0 {
+                        if (mask & (IN_CREATE | IN_MOVED_TO)) != 0 {
                             let _ = add_reader(reader_name, &path, &readers);
                         }
-                        if (event.mask & (IN_DELETE | IN_MOVED_FROM)) != 0 {
+                        if (mask & (IN_DELETE | IN_MOVED_FROM)) != 0 {
                             remove_reader(reader_name, &readers);
                         }
                     }
 
-                    let event_size = mem::size_of::<inotify_event>() + name_len;
-                    offset += event_size;
+                    offset = name_end;
                 }
             }
         });
 
-        Ok(())
+        Ok(Self {
+            fd: Some(inotify_fd),
+            shutdown,
+            handle: Some(handle),
+        })
+    }
+
+        fn stop(&mut self) {
+            self.shutdown.store(true, Ordering::Release);
+            if let Some(fd) = self.fd.take() {
+                unsafe {
+                    libc::close(fd);
+                }
+            }
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn parse_event_header(buf: &[u8]) -> Option<(u32, u32)> {
+        if buf.len() < mem::size_of::<inotify_event>() {
+            return None;
+        }
+        let mask = u32::from_ne_bytes(buf[4..8].try_into().ok()?);
+        let len = u32::from_ne_bytes(buf[12..16].try_into().ok()?);
+        Some((mask, len))
     }
 
     fn add_reader(name: &str, path: &Path, readers: &Arc<Mutex<HashMap<String, RawFd>>>) -> Result<()> {
