@@ -13,7 +13,7 @@ use crate::header::{
 use crate::mmap::MmapFile;
 use crate::segment::{
     create_segment, load_index, open_segment, read_segment_header, seal_segment, segment_path,
-    store_index, SegmentIndex, SEG_DATA_OFFSET, SEGMENT_SIZE,
+    store_index, SegmentIndex, SEG_DATA_OFFSET, SEG_FLAG_SEALED, SEGMENT_SIZE,
 };
 use crate::wait::futex_wake;
 use crate::{Error, Result};
@@ -73,6 +73,24 @@ impl Queue {
             } else {
                 write_offset = SEG_DATA_OFFSET as u64;
             }
+        }
+
+        let header = read_segment_header(&mmap)?;
+        let next_segment_id = segment_id + 1;
+        let next_path = segment_path(&path, next_segment_id as u64);
+        if !tail_partial && ((header.flags & SEG_FLAG_SEALED) != 0 || next_path.exists()) {
+            if (header.flags & SEG_FLAG_SEALED) == 0 {
+                seal_segment(&mut mmap)?;
+                mmap.sync()?;
+            }
+            if next_path.exists() {
+                segment_id = next_segment_id;
+                mmap = open_segment(&path, segment_id as u64)?;
+            } else {
+                mmap = create_segment(&path, next_segment_id as u64)?;
+                segment_id = next_segment_id;
+            }
+            write_offset = SEG_DATA_OFFSET as u64;
         }
 
         control.set_current_segment(segment_id);

@@ -5,7 +5,7 @@ use crate::Result;
 
 #[cfg(target_os = "linux")]
 pub fn futex_wait(addr: &AtomicU32, expected: u32, timeout: Option<Duration>) -> Result<()> {
-    use libc::{syscall, timespec, EINTR, EAGAIN, FUTEX_WAIT, SYS_futex};
+    use libc::{syscall, timespec, EAGAIN, EINTR, ETIMEDOUT, FUTEX_WAIT, SYS_futex};
 
     let mut ts = timespec { tv_sec: 0, tv_nsec: 0 };
     let ts_ptr = if let Some(timeout) = timeout {
@@ -32,7 +32,7 @@ pub fn futex_wait(addr: &AtomicU32, expected: u32, timeout: Option<Duration>) ->
     }
     let err = std::io::Error::last_os_error();
     match err.raw_os_error() {
-        Some(code) if code == EAGAIN || code == EINTR => Ok(()),
+        Some(code) if code == EAGAIN || code == EINTR || code == ETIMEDOUT => Ok(()),
         _ => Err(crate::Error::Io(err)),
     }
 }

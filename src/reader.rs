@@ -159,6 +159,9 @@ impl QueueReader {
             }
         }
         let seq = self.control.notify_seq().load(Ordering::Acquire);
+        if self.peek_committed()? {
+            return Ok(());
+        }
         futex_wait(self.control.notify_seq(), seq, timeout)
     }
 
