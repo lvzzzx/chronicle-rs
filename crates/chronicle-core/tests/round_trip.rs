@@ -1,5 +1,5 @@
-use chronicle::header::MessageHeader;
-use chronicle::mmap::MmapFile;
+use chronicle_core::header::MessageHeader;
+use chronicle_core::mmap::MmapFile;
 use tempfile::tempdir;
 
 #[test]

@@ -1,5 +1,5 @@
-use chronicle::retention::cleanup_segments;
-use chronicle::segment::{create_segment, store_reader_meta, ReaderMeta, SEGMENT_SIZE, SEG_DATA_OFFSET};
+use chronicle_core::retention::cleanup_segments;
+use chronicle_core::segment::{create_segment, store_reader_meta, ReaderMeta, SEGMENT_SIZE, SEG_DATA_OFFSET};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 

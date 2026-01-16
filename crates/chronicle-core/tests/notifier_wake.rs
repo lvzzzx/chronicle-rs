@@ -1,5 +1,5 @@
 #[cfg(target_os = "linux")]
-use chronicle::Queue;
+use chronicle_core::Queue;
 #[cfg(target_os = "linux")]
 use std::sync::mpsc;
 #[cfg(target_os = "linux")]
@@ -7,7 +7,7 @@ use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 #[test]
-fn reader_wait_wakes_on_append() -> chronicle::Result<()> {
+fn reader_wait_wakes_on_append() -> chronicle_core::Result<()> {
     let dir = tempfile::tempdir()?;
     let mut writer = Queue::open_publisher(dir.path())?;
     let mut reader = Queue::open_subscriber(dir.path(), "reader_a")?;
@@ -17,7 +17,7 @@ fn reader_wait_wakes_on_append() -> chronicle::Result<()> {
     let (started_tx, started_rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
 
-    let handle = std::thread::spawn(move || -> chronicle::Result<()> {
+    let handle = std::thread::spawn(move || -> chronicle_core::Result<()> {
         let _ = started_tx.send(());
         reader.wait(Some(Duration::from_secs(1)))?;
         let _ = done_tx.send(());

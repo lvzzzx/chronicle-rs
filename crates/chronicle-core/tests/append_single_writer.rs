@@ -1,7 +1,7 @@
-use chronicle::header::{MessageHeader, HEADER_SIZE, RECORD_ALIGN};
-use chronicle::mmap::MmapFile;
-use chronicle::segment::{SEGMENT_SIZE, SEG_DATA_OFFSET};
-use chronicle::Queue;
+use chronicle_core::header::{MessageHeader, HEADER_SIZE, RECORD_ALIGN};
+use chronicle_core::mmap::MmapFile;
+use chronicle_core::segment::{SEGMENT_SIZE, SEG_DATA_OFFSET};
+use chronicle_core::Queue;
 use tempfile::tempdir;
 
 fn read_header(map: &[u8], offset: usize) -> MessageHeader {

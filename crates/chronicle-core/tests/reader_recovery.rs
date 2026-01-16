@@ -1,4 +1,4 @@
-use chronicle::Queue;
+use chronicle_core::Queue;
 use tempfile::tempdir;
 
 #[test]

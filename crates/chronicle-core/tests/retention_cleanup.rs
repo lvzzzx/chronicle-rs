@@ -1,6 +1,6 @@
-use chronicle::header::HEADER_SIZE;
-use chronicle::segment::{SEGMENT_SIZE, SEG_DATA_OFFSET};
-use chronicle::Queue;
+use chronicle_core::header::HEADER_SIZE;
+use chronicle_core::segment::{SEGMENT_SIZE, SEG_DATA_OFFSET};
+use chronicle_core::Queue;
 use tempfile::tempdir;
 
 #[test]
