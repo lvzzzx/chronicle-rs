@@ -102,6 +102,9 @@ struct MessageHeader {
     _pad: [u8; 64 - (4 + 8 + 8 + 2 + 2 + 4)],
 }
 
+Reserved type_id values (architecture):
+	•	0xFFFF = PAD (internal padding record; readers must skip)
+
 4.3 Publish/consume protocol (required discipline)
 
 Writer sequence:
@@ -134,6 +137,7 @@ Rule: Readers must never read payload bytes unless they have first observed comm
 	•	Readers must not read payload bytes unless they have observed commit_len > 0 with Acquire.
 	•	Writer uses a single-writer append discipline; no two writers share a queue directory.
 	•	Record boundaries are 64-byte aligned and computed from payload_len; readers must advance using align_up.
+	•	Records with type_id = 0xFFFF (PAD) are internal and must be skipped by readers.
 	•	Segment transitions are driven by boundary + SEALED checks; control.current_segment is a hint, not a correctness signal.
 	•	Retention ignores dead readers (TTL exceeded); readers must heartbeat even when idle to remain live.
 
@@ -154,19 +158,23 @@ use core::sync::atomic::{AtomicU32, AtomicU64};
 const CTRL_MAGIC: u32 = 0x4348524E; // 'CHRN'
 const CTRL_VERSION: u32 = 1;
 
-#[repr(C, align(64))]
+#[repr(C, align(128))]
 struct ControlBlock {
+    // Constant / low-frequency fields (avoid sharing with hot fields).
     magic: AtomicU32,       // CTRL_MAGIC when initialized
     version: AtomicU32,     // CTRL_VERSION
     init_state: AtomicU32,  // 0=uninit, 1=initializing, 2=ready
+    writer_epoch: AtomicU64, // increments on writer restart (optional)
+    _pad1: [u8; 108],       // pad to 128 bytes
 
+    // Reader-hot, rarely written (separate cache line).
     current_segment: AtomicU32,
-    write_offset: AtomicU64,   // writer position within current segment (resets on roll)
+    _pad2: [u8; 124],       // pad to 128 bytes
 
-    notify_seq: AtomicU32,     // futex wait/wake target (queue-level)
-    writer_epoch: AtomicU64,   // increments on writer restart (optional)
-
-    _pad: [u8; 64],
+    // Writer-hot (frequently written).
+    write_offset: AtomicU64, // writer position within current segment (resets on roll)
+    notify_seq: AtomicU32,   // futex wait/wake target (queue-level)
+    _pad3: [u8; 116],       // pad to 128 bytes
 }
 
 5.3 Initialization protocol (atomic and safe)
@@ -312,6 +320,10 @@ loop:
 
   if n > 0:
       payload_len = n - 1
+      if hdr.type_id == 0xFFFF:
+          // PAD: skip without surfacing to user
+          offset += align_up(HEADER_SIZE + payload_len, RECORD_ALIGN)
+          continue
       consume payload[0..payload_len]
       offset += align_up(HEADER_SIZE + payload_len, RECORD_ALIGN)
       continue
@@ -324,6 +336,24 @@ loop:
   wait() or backoff
 
 This protocol is self-synchronizing and avoids depending on control.current_segment for correctness. control.current_segment is a hint for availability, not a correctness signal.
+
+7.4 Recovery scan and tail repair (normative)
+
+On open_publisher(), the writer must establish a safe append point:
+	•	If index.meta is present, start from its {segment_id, offset} checkpoint; otherwise scan from SEG_DATA_OFFSET of the latest segment.
+	•	Scan forward record-by-record while commit_len.load(Acquire) > 0 and payload_len <= MAX_PAYLOAD_LEN.
+	•	The first record with commit_len == 0 or an invalid header is treated as the end-of-log.
+
+Tail repair requirement:
+	•	If the end-of-log offset is within a segment and there is space for a header, the writer MUST overwrite that position with a PAD record that spans the remaining bytes in the segment:
+		•	type_id = 0xFFFF (PAD)
+		•	payload_len = remaining_bytes - HEADER_SIZE
+		•	commit_len = payload_len + 1 (Release)
+		•	payload bytes may be zero-filled
+	•	If there is not enough space for a header, the writer MUST seal the segment and roll.
+	•	After PAD/seal, the writer sets write_offset to SEG_DATA_OFFSET of the next segment and proceeds with normal appends.
+
+Rationale: Readers encountering a partially written record will either skip a committed PAD record or see a sealed segment boundary; they must never block indefinitely on uncommitted garbage.
 
 ⸻
 
@@ -371,6 +401,11 @@ Defaults are workload dependent:
 	•	market data: TTL ~ 10s
 	•	orders/control: TTL ~ 30–60s
 	•	audit/compliance: TTL ~ 300s
+
+Lagging reader policy (MAX_RETENTION_LAG):
+	•	A reader is considered retention-inactive if head_offset - committed_offset > MAX_RETENTION_LAG, even if it is heartbeating.
+	•	This prevents stalled but alive processes from blocking retention indefinitely.
+	•	MAX_RETENTION_LAG is configurable (e.g., 10 GiB or a fixed number of segments); exceeding it should be logged and surfaced to operators.
 
 9.3 Retention eligibility
 
