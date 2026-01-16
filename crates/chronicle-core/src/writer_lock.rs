@@ -1,5 +1,7 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
+#[cfg(target_os = "linux")]
+use std::io::Read;
 use std::path::Path;
 
 use crate::{Error, Result};
@@ -61,7 +63,7 @@ fn proc_start_time(pid: u32) -> Result<u64> {
     let end = contents.rfind(')').ok_or(Error::CorruptMetadata("stat parse"))?;
     let after = &contents[end + 1..];
     let mut fields = after.split_whitespace();
-    for _ in 0..20 {
+    for _ in 0..19 {
         fields.next();
     }
     let start = fields
@@ -110,6 +112,7 @@ fn lock_identity() -> Result<(u32, u64)> {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 fn read_lock_record(_file: &File) -> Result<(u32, u64, u64)> {
     Ok((0, 0, 0))
 }

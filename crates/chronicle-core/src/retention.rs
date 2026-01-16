@@ -14,8 +14,7 @@ pub fn cleanup_segments(root: &Path, head_segment: u64, head_offset: u64) -> Res
         return Ok(Vec::new());
     }
 
-    let min_pos = min_live_reader_position(root, head_segment, head_offset)?;
-    let min_segment = min_pos / crate::segment::SEGMENT_SIZE as u64;
+    let min_segment = min_live_reader_segment(root, head_segment, head_offset)?;
 
     let mut deleted = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -40,6 +39,51 @@ pub fn cleanup_segments(root: &Path, head_segment: u64, head_offset: u64) -> Res
 
     deleted.sort_unstable();
     Ok(deleted)
+}
+
+pub fn min_live_reader_segment(root: &Path, head_segment: u64, head_offset: u64) -> Result<u64> {
+    let readers_dir = root.join("readers");
+    if !readers_dir.exists() {
+        return Ok(head_segment);
+    }
+
+    let head = head_segment
+        .saturating_mul(crate::segment::SEGMENT_SIZE as u64)
+        .saturating_add(head_offset);
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::Unsupported("system time before UNIX epoch"))?
+        .as_nanos();
+    let now_ns = u64::try_from(now_ns)
+        .map_err(|_| Error::Unsupported("system time exceeds timestamp range"))?;
+
+    let mut min_segment: Option<u64> = None;
+    for entry in fs::read_dir(&readers_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("meta") {
+            continue;
+        }
+        let meta = load_reader_meta(&path)?;
+        if meta.last_heartbeat_ns != 0
+            && now_ns.saturating_sub(meta.last_heartbeat_ns) > READER_TTL_NS
+        {
+            continue;
+        }
+        let reader_global = meta
+            .segment_id
+            .saturating_mul(crate::segment::SEGMENT_SIZE as u64)
+            .saturating_add(meta.offset);
+        if head > reader_global && head - reader_global > MAX_RETENTION_LAG {
+            continue;
+        }
+        min_segment = Some(match min_segment {
+            Some(current) => current.min(meta.segment_id),
+            None => meta.segment_id,
+        });
+    }
+
+    Ok(min_segment.unwrap_or(head_segment))
 }
 
 pub fn min_live_reader_position(root: &Path, head_segment: u64, head_offset: u64) -> Result<u64> {

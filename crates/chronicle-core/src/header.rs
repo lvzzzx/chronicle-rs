@@ -8,11 +8,11 @@ pub const MAX_PAYLOAD_LEN: usize = u32::MAX as usize - 1;
 pub const PAD_TYPE_ID: u16 = 0xFFFF;
 
 pub const COMMIT_LEN_OFFSET: usize = 0;
-pub const SEQ_OFFSET: usize = 4;
-pub const TIMESTAMP_OFFSET: usize = 12;
-pub const TYPE_ID_OFFSET: usize = 20;
-pub const FLAGS_OFFSET: usize = 22;
-pub const RESERVED_OFFSET: usize = 24;
+pub const SEQ_OFFSET: usize = 8;
+pub const TIMESTAMP_OFFSET: usize = 16;
+pub const TYPE_ID_OFFSET: usize = 24;
+pub const FLAGS_OFFSET: usize = 26;
+pub const RESERVED_OFFSET: usize = 28;
 
 #[repr(C, align(64))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,28 +46,47 @@ impl MessageHeader {
 
     pub fn to_bytes(&self) -> [u8; 64] {
         let mut buf = [0u8; 64];
-        buf[0..4].copy_from_slice(&self.commit_len.to_le_bytes());
-        buf[4..12].copy_from_slice(&self.seq.to_le_bytes());
-        buf[12..20].copy_from_slice(&self.timestamp_ns.to_le_bytes());
-        buf[20..22].copy_from_slice(&self.type_id.to_le_bytes());
-        buf[22..24].copy_from_slice(&self.flags.to_le_bytes());
-        buf[24..28].copy_from_slice(&self.reserved_u32.to_le_bytes());
-        buf[28..60].copy_from_slice(&self._pad);
+        buf[COMMIT_LEN_OFFSET..COMMIT_LEN_OFFSET + 4]
+            .copy_from_slice(&self.commit_len.to_le_bytes());
+        buf[4..8].copy_from_slice(&self._pad0.to_le_bytes());
+        buf[SEQ_OFFSET..SEQ_OFFSET + 8].copy_from_slice(&self.seq.to_le_bytes());
+        buf[TIMESTAMP_OFFSET..TIMESTAMP_OFFSET + 8]
+            .copy_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf[TYPE_ID_OFFSET..TYPE_ID_OFFSET + 2].copy_from_slice(&self.type_id.to_le_bytes());
+        buf[FLAGS_OFFSET..FLAGS_OFFSET + 2].copy_from_slice(&self.flags.to_le_bytes());
+        buf[RESERVED_OFFSET..RESERVED_OFFSET + 4]
+            .copy_from_slice(&self.reserved_u32.to_le_bytes());
+        buf[32..64].copy_from_slice(&self._pad);
         buf
     }
 
     pub fn from_bytes(bytes: &[u8; 64]) -> Result<Self> {
-        let commit_len = u32::from_le_bytes(bytes[0..4].try_into().expect("slice length"));
-        let seq = u64::from_le_bytes(bytes[4..12].try_into().expect("slice length"));
-        let timestamp_ns = u64::from_le_bytes(bytes[12..20].try_into().expect("slice length"));
-        let type_id = u16::from_le_bytes(bytes[20..22].try_into().expect("slice length"));
-        let flags = u16::from_le_bytes(bytes[22..24].try_into().expect("slice length"));
-        let reserved_u32 = u32::from_le_bytes(bytes[24..28].try_into().expect("slice length"));
+        let commit_len = u32::from_le_bytes(
+            bytes[COMMIT_LEN_OFFSET..COMMIT_LEN_OFFSET + 4]
+                .try_into()
+                .expect("slice length"),
+        );
+        let _pad0 = u32::from_le_bytes(bytes[4..8].try_into().expect("slice length"));
+        let seq = u64::from_le_bytes(bytes[SEQ_OFFSET..SEQ_OFFSET + 8].try_into().expect("slice length"));
+        let timestamp_ns = u64::from_le_bytes(
+            bytes[TIMESTAMP_OFFSET..TIMESTAMP_OFFSET + 8]
+                .try_into()
+                .expect("slice length"),
+        );
+        let type_id =
+            u16::from_le_bytes(bytes[TYPE_ID_OFFSET..TYPE_ID_OFFSET + 2].try_into().expect("slice length"));
+        let flags =
+            u16::from_le_bytes(bytes[FLAGS_OFFSET..FLAGS_OFFSET + 2].try_into().expect("slice length"));
+        let reserved_u32 = u32::from_le_bytes(
+            bytes[RESERVED_OFFSET..RESERVED_OFFSET + 4]
+                .try_into()
+                .expect("slice length"),
+        );
         let mut _pad = [0u8; 32];
-        _pad.copy_from_slice(&bytes[28..60]);
+        _pad.copy_from_slice(&bytes[32..64]);
         Ok(Self {
             commit_len,
-            _pad0: 0,
+            _pad0,
             seq,
             timestamp_ns,
             type_id,
@@ -135,5 +154,22 @@ mod tests {
     fn crc_matches_known_payload() {
         let crc = MessageHeader::crc32(b"hello");
         assert_eq!(crc, 0x3610A686);
+    }
+
+    #[test]
+    fn header_round_trip_preserves_fields() {
+        let header = MessageHeader {
+            commit_len: 42,
+            _pad0: 0xAABB_CCDD,
+            seq: 0x1122_3344_5566_7788,
+            timestamp_ns: 0x99AA_BBCC_DDEE_FF00,
+            type_id: 0x1357,
+            flags: 0x2468,
+            reserved_u32: 0x0F0E_0D0C,
+            _pad: [0x5A; 32],
+        };
+        let bytes = header.to_bytes();
+        let decoded = MessageHeader::from_bytes(&bytes).expect("decode header");
+        assert_eq!(decoded, header);
     }
 }

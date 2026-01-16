@@ -33,6 +33,10 @@ pub struct ControlFile {
     ptr: *mut ControlBlock,
 }
 
+// SAFETY: ControlFile owns the mapping and raw pointer; moving it to another
+// thread is safe as long as it is not concurrently accessed.
+unsafe impl Send for ControlFile {}
+
 impl ControlFile {
     pub fn create(path: &Path, current_segment: u32, write_offset: u64, writer_epoch: u64) -> Result<Self> {
         let tmp_path = path.with_extension("tmp");

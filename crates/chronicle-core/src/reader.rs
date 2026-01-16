@@ -99,6 +99,9 @@ impl QueueReader {
             let offset = self.read_offset as usize;
             let commit = MessageHeader::load_commit_len(&self.mmap.as_slice()[offset] as *const u8);
             if commit == 0 {
+                if self.advance_segment()? {
+                    continue;
+                }
                 return Ok(None);
             }
 
