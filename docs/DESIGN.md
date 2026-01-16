@@ -1,242 +1,558 @@
-# Low-Latency Persisted Messaging Framework (Chronicle-style, Rust)
+Low-Latency Persisted Messaging Framework (Chronicle-style, Rust)
 
-## 1. Overview
-Goal: Build a **memory-mapped, persistent messaging queue** for HFT systems — combining **in-memory performance** with **durable persistence**.
+1. Overview
 
-Characteristics:
-- Lock-free writers and readers
-- `mmap`-based append-only storage
-- Per-reader metadata for recovery
-- Event-driven notification using Linux `eventfd`
-- Multi-queue fan-in (many writers → one reader)
-- Segment rolling and background retention cleanup
+This project provides a single-host, low-latency, persisted messaging queue designed for HFT-style systems that use multiple cooperating processes. It combines in-memory performance (via mmap) with fast recovery and controlled retention.
 
-## 2. Core Design Principles
-| Concept | Purpose |
-|----------|----------|
-| **Memory-mapped file (mmap)** | Gives in-memory speed with OS-backed durability. |
-| **Append-only log** | Simplifies concurrency and recovery. |
-| **Fixed header + valid bit** | Guarantees atomic, consistent message visibility. |
-| **Per-reader metadata files** | Each reader tracks its own offset safely. |
-| **Eventfd signaling** | Enables blocking reads without polling. |
-| **Segment rolling** | Bounded file size, simple retention. |
-| **Multi-queue fan-in** | Scales writers linearly and keeps queues isolated. |
+Target deployment (initial milestone):
+	•	Linux, single host
+	•	Separate processes (typical): market feed, strategy, order router
+	•	One-writer-per-queue, many independent readers
+	•	Persistent per-reader offsets for restart and replay
+	•	Segment rolling and retention cleanup
+	•	Optional multi-queue fan-in reader (many queues → one consumer)
 
-## 3. Message Layout
-### `MessageHeader` (64 bytes, 64-byte aligned)
-```rust
-#[repr(C, align(64))] // Cache-line aligned to prevent false sharing between writer/reader
+Non-goals (MVP):
+	•	Multi-host networking/discovery
+	•	Process supervision (starting/stopping processes)
+	•	Central configuration distribution
+
+2. Architecture: Data Plane vs Control Plane Helper
+
+To keep the low-latency core deterministic and stable, the design is explicitly split:
+
+2.1 Data plane: chronicle-core (the queue engine)
+
+Responsibilities:
+	•	On-disk format (segments, headers), record alignment
+	•	Single-writer append protocol and recovery scanning
+	•	Per-reader committed offsets and atomic update strategy
+	•	Segment rolling and retention eligibility
+	•	Blocking read (hybrid spin + futex wait)
+
+Non-responsibilities:
+	•	Naming conventions for “market data vs orders”
+	•	Process lifecycle, orchestration, or deployment
+	•	Dynamic strategy discovery policies (beyond primitives)
+
+2.2 Control plane helper: chronicle-bus (thin glue, not a platform)
+
+Responsibilities:
+	•	Standard directory layout and endpoint naming
+	•	READY/LEASE markers (readiness and liveness signals)
+	•	Router discovery helpers (scan + watch + dedup)
+	•	RAII registration helpers (clean shutdown cleanup)
+
+Non-responsibilities:
+	•	Starting/stopping processes
+	•	Central service registry
+	•	Admission control, scheduling, or quotas
+
+Guiding principle: chronicle-bus must remain a small utility layer. Anything that smells like orchestration stays outside.
+
+⸻
+
+3. Core Data Model
+
+3.1 Queue is an append-only log of records
+
+A queue is stored as segments (.q files) that are appended to sequentially. Each segment is mmap’d for writing and reading.
+
+3.2 One writer per queue directory
+
+MVP enforces exactly one writer per queue directory using an OS file lock (Section 6.1). Multi-writer is intentionally avoided; scale writers linearly using one queue per writer and merge at the consumer (fan-in).
+
+3.3 Per-reader committed offsets
+
+Each reader has its own committed position persisted to /readers/<name>.meta. Readers do not contend with each other and can progress independently.
+
+⸻
+
+4. Record Format and Memory Model (Normative)
+
+4.1 Alignment
+	•	HEADER_SIZE = 64
+	•	RECORD_ALIGN = 64 (default)
+	•	Record layout: [MessageHeader][payload bytes][padding]
+	•	record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN)
+
+All record headers begin on a RECORD_ALIGN boundary.
+
+4.2 Message header
+
+use core::sync::atomic::AtomicU32;
+
+#[repr(C, align(64))]
 struct MessageHeader {
-    length: u32,        // 4 bytes
-    seq: u64,           // 8 bytes
-    timestamp_ns: u64,  // 8 bytes
-    flags: u8,          // 1 byte (bit0 = valid/commit)
-    type_id: u16,       // 2 bytes (msg type/schema version)
-    _reserved: u8,      // 1 byte
-    checksum: u32,      // 4 bytes (CRC32 of payload)
-    _pad: [u8; 36],     // 36 bytes (Padding to reach 64 bytes)
+    /// Commit word:
+    /// 0 = uncommitted
+    /// >0 = committed payload length in bytes
+    commit_len: AtomicU32,
+
+    seq: u64,
+    timestamp_ns: u64,
+    type_id: u16,
+    flags: u16,
+
+    // reserved / future use (checksum feature may repurpose this field)
+    reserved_u32: u32,
+
+    _pad: [u8; 64 - (4 + 8 + 8 + 2 + 2 + 4)],
 }
-```
 
-**Write sequence:**
-1. Write header with `flags = 0`.
-2. Write payload.
-3. Flip `flags` → `1` using `store(Ordering::Release)`.
+4.3 Publish/consume protocol (required discipline)
 
-**Read sequence:**
-1. Read header.
-2. Spin until `flags.load(Ordering::Acquire) == 1`.
-3. If spin duration > `TIMEOUT`, treat as "Stuck Writer" (see Section 4).
+Writer sequence:
+	1.	Reserve space: pos = write_offset.fetch_add(record_len, AcqRel)
+	2.	Write header fields (except commit_len, which remains 0)
+	3.	Write payload bytes
+	4.	Publish commit: commit_len.store(payload_len, Release)
+	5.	Notify waiters (Section 5)
 
-## 4. Concurrency Model
-### Single writer
-- Uses an atomic `write_index: AtomicU64` for append position.
-- Reservation:
-  ```rust
-  let pos = write_index.fetch_add(msg_size, Ordering::AcqRel);
-  ```
-- Ensures non-overlapping writes and correct memory visibility.
+Reader sequence:
+	1.	Load commit: n = commit_len.load(Acquire)
+	2.	If n == 0, the record at this offset is not committed → wait/backoff
+	3.	If n > 0, read exactly n bytes of payload
+	4.	Advance offset by align_up(HEADER_SIZE + n, RECORD_ALIGN)
 
-### Multiple writers (optional)
-- Prefer **one queue per writer** (multi-queue fan-in).
-- Reader merges messages by timestamp.
+4.4 Memory ordering guarantee (explicit)
 
-### Readers
-- Each has its own `read_pos` persisted in `/readers/<name>.meta`.
-- No lock contention; independent progress.
+The following is guaranteed:
+	•	The writer’s commit_len.store(payload_len, Release) synchronizes-with a reader’s commit_len.load(Acquire) that observes payload_len.
+	•	Therefore, all prior writes by the writer for that record (header fields and payload bytes) happen-before the reader’s subsequent reads of the payload.
 
-## 5. Event Notification System
-**Goal:** Readers block until new messages arrive.
+Rule: Readers must never read payload bytes unless they have first observed commit_len > 0 via an Acquire load. This rule is part of the API contract.
 
-Implementation:
-- Each reader creates an `eventfd(0, EFD_NONBLOCK|EFD_CLOEXEC)`.
-- Writes its fd number into `/readers/<name>.efd`.
-- Writer watches `/readers/` using `inotify`:
-  - `IN_CREATE` → new reader
-  - `IN_DELETE` → remove reader
-- After commit:
-  ```rust
-  for r in readers {
-      let _ = eventfd_write(r.fd, 1);
-  }
-  ```
-Readers block on their own `eventfd` via `epoll_wait`.
+⸻
 
-## 6. Persistence Layout
-### Directory structure
-```
+5. Blocking Wait / Notification (Normative)
+
+5.1 Motivation
+
+Readers should block when no committed records are available without constant polling.
+
+5.2 Shared control block (control.meta)
+
+Each queue directory contains a small shared-mapped control.meta file:
+
+use core::sync::atomic::{AtomicU32, AtomicU64};
+
+const CTRL_MAGIC: u32 = 0x4348524E; // 'CHRN'
+const CTRL_VERSION: u32 = 1;
+
+#[repr(C, align(64))]
+struct ControlBlock {
+    magic: AtomicU32,       // CTRL_MAGIC when initialized
+    version: AtomicU32,     // CTRL_VERSION
+    init_state: AtomicU32,  // 0=uninit, 1=initializing, 2=ready
+
+    current_segment: AtomicU32,
+    write_offset: AtomicU64,   // writer position within current segment (monotonic)
+
+    notify_seq: AtomicU32,     // futex wait/wake target (queue-level)
+    writer_epoch: AtomicU64,   // increments on writer restart (optional)
+
+    _pad: [u8; 64],
+}
+
+5.3 Initialization protocol (atomic and safe)
+
+To avoid readers mapping partially initialized control blocks:
+
+Publisher creates atomically:
+	1.	Create control.meta.tmp, set file size
+	2.	mmap and set init_state = 1 (initializing)
+	3.	Initialize fields: version, current_segment, write_offset, writer_epoch
+	4.	Set magic = CTRL_MAGIC
+	5.	Set init_state = 2 with Release
+	6.	rename(control.meta.tmp → control.meta) (atomic)
+
+Subscriber open:
+	•	mmap(control.meta)
+	•	spin/wait until init_state.load(Acquire) == 2
+	•	verify magic == CTRL_MAGIC and version supported
+
+5.4 Hybrid wait strategy
+
+Default wait strategy is hybrid:
+	•	Busy spin for SPIN_US (configurable; default 5–20µs)
+	•	If still no data, futex wait on notify_seq with optional timeout
+
+Writer notifies after each commit:
+	•	notify_seq.fetch_add(1, Relaxed)
+	•	futex_wake(notify_seq) (wake all waiters on this queue)
+
+Scalability statement:
+	•	Broadcast queues (market data) typically have many readers; waking them is expected.
+	•	Fan-in queues are typically SPSC (router is sole reader per strategy queue), so no herd.
+	•	For MVP, queue-level wake is acceptable; per-reader notification can be added later if needed.
+
+⸻
+
+6. Persistence Layout and Writer Exclusivity
+
+6.1 Directory structure (single host)
+
 /var/lib/hft_bus/
 └── orders/
-    ├── queue/
-    │   ├── writer_1/
-    │   │   ├── 000000000.q
-    │   │   ├── 000000001.q
-    │   │   └── index.meta
-    │   ├── writer_2/
-    │   │   └── ...
-    │
-    ├── readers/
-    │   ├── engine_1.meta
-    │   ├── engine_1.efd
-    │   ├── risk_monitor.meta
-    │   └── risk_monitor.efd
-    │
-    └── config.toml
-```
+    └── queue/
+        ├── strategy_A/
+        │   ├── control.meta
+        │   ├── writer.lock
+        │   ├── 000000000.q
+        │   ├── 000000001.q
+        │   ├── index.meta           # optional tail checkpoint
+        │   └── readers/
+        │       ├── router.meta
+        │       └── audit.meta
+        └── strategy_B/
+            └── ...
 
-- `.q` files are **segments** (e.g. 1 GiB each).
-- `index.meta` → stores `{ current_segment, write_offset }`.
-- Reader `.meta` → stores last committed `read_pos`.
+6.2 writer.lock semantics (non-optional PID staleness check)
 
-## 7. Segment Rolling
-**Trigger:** `write_index >= SEGMENT_SIZE`
-**Procedure:**
-1. `msync()` and close current `.q`.
-2. Increment segment ID.
-3. Create `NNNNNNNNN.q` via `fallocate()`.
-4. `mmap` it and reset `write_index = 0`.
-5. Persist `current_segment` to `index.meta`.
+The writer holds an advisory lock on writer.lock. The file stores {pid, start_time_ns, writer_epoch} for diagnostics.
 
-**Reader behavior:**
-- When reaching EOF, attempt to open next segment.
-- If not found, block on eventfd.
+On open_publisher():
+	•	Attempt to acquire lock.
+	•	If lock cannot be acquired:
+	•	Read pid from lock file.
+	•	Verify process existence via /proc/<pid> (Linux-only and mandatory for MVP).
+	•	If /proc/<pid> does not exist, treat as stale and retry lock acquisition.
+	•	Otherwise, return Err(WriterAlreadyActive).
 
-**Cleanup:** Background process deletes segments only when *all readers*’ offsets exceed their range.
+File locks release automatically on process exit/crash; the PID check avoids false failures due to stale metadata or PID recycling edge cases.
 
-## 8. API Design
-### Public Structures
-```rust
-pub struct Queue {
-    path: PathBuf,
-    mmap: MmapMut,
-    write_index: AtomicU64,
-    notifier: Option<Notifier>,
+⸻
+
+7. Segment Files and Rolling (Normative)
+
+7.1 Segment header and seal mechanism (chosen)
+
+MVP uses a segment header flag to signal seal/end-of-segment.
+
+At the start of every segment file:
+
+const SEG_MAGIC: u32 = 0x53454730; // 'SEG0'
+const SEG_VERSION: u32 = 1;
+const SEG_FLAG_SEALED: u32 = 1;
+
+#[repr(C)]
+struct SegmentHeader {
+    magic: u32,
+    version: u32,
+    segment_id: u32,
+    flags: u32,          // bit0 = SEALED
+    _pad: [u8; 48],      // total 64 bytes
 }
 
-pub struct QueueWriter {
-    queue: Arc<Queue>,
+Segment data begins at SEG_DATA_OFFSET = 64.
+
+7.2 Writer rolling protocol (ordered)
+
+Trigger: write_offset + record_len > SEGMENT_SIZE.
+	1.	Create and preallocate next segment file N+1.q (fallocate)
+	2.	Write SegmentHeader for N+1 (flags=0)
+	3.	Publish new segment to control block:
+	•	current_segment.store(N+1, Release)
+	•	write_offset.store(SEG_DATA_OFFSET, Release)
+	4.	Seal old segment N.q:
+	•	set SEG_FLAG_SEALED in N’s segment header
+	•	msync the page containing the segment header (best effort)
+	5.	Notify waiters
+
+Note: sealing after publishing is acceptable because readers only transition on seal + boundary checks (below). Seal is the definitive “no more records will be appended to this segment” signal.
+
+7.3 Reader transition protocol (precise)
+
+Readers track (segment_id, offset) and only transition when unable to progress in the current segment.
+
+Definitions:
+	•	SEG_END = SEGMENT_SIZE
+	•	MIN_RECORD = HEADER_SIZE (payload may be zero)
+	•	last_possible_record_boundary = SEG_END - MIN_RECORD
+	•	If offset > last_possible_record_boundary, there is not enough room to store even a minimal record header, so no valid new record can start at or beyond this point.
+
+Reader pseudocode:
+
+loop:
+  if offset > last_possible_record_boundary:
+      // cannot start another record in this segment
+      if segment_header.flags has SEALED and file_exists(segment_id + 1):
+          remap to segment_id + 1
+          offset = SEG_DATA_OFFSET
+          continue
+      wait()
+      continue
+
+  hdr = read MessageHeader at (segment_id, offset)
+  n = hdr.commit_len.load(Acquire)
+
+  if n > 0:
+      consume payload[0..n]
+      offset += align_up(HEADER_SIZE + n, RECORD_ALIGN)
+      continue
+
+  // n == 0: no committed message here yet
+  if segment SEALED and offset > last_possible_record_boundary:
+      // handled by top-of-loop on next iteration
+      continue
+
+  wait() or backoff
+
+This protocol is self-synchronizing and avoids depending on control.current_segment for correctness. control.current_segment is a hint for availability, not a correctness signal.
+
+⸻
+
+8. Backpressure, Capacity, and Failure Behavior (Operational Contract)
+
+8.1 Capacity limits
+
+Each queue enforces a configured maximum storage budget:
+	•	either MAX_BYTES or MAX_SEGMENTS
+
+If accepting a new record would exceed the cap, append() returns Err(QueueFull) (fail-fast). The writer does not block indefinitely.
+
+Operational guidance:
+	•	Applications must monitor QueueFull and treat it as a circuit-breaker condition (alert, shed load, drop non-critical messages, etc.).
+
+8.2 Disk full behavior
+
+If fallocate() fails during segment creation (disk full or quota), writer returns an error from append() or roll step. This is treated as a hard fault; the system must alert.
+
+⸻
+
+9. Reader Liveness, Retention, and Dead Readers (Normative + Operational)
+
+9.1 Reader meta fields
+
+Each reader meta persists:
+	•	committed position (segment_id, offset) or equivalent monotonic index
+	•	last_heartbeat_ns
+
+Readers update:
+	•	committed position on commit()
+	•	heartbeat every HEARTBEAT_INTERVAL (default 1s)
+
+Meta updates must be atomic and corruption-detecting (recommended double-slot with generation + CRC).
+
+9.2 Live reader definition (TTL)
+
+A reader is live if:
+	•	now_ns - last_heartbeat_ns <= READER_TTL_NS
+
+Defaults are workload dependent:
+	•	market data: TTL ~ 10s
+	•	orders/control: TTL ~ 30–60s
+	•	audit/compliance: TTL ~ 300s
+
+9.3 Retention eligibility
+
+A segment is eligible for deletion when all live readers have committed positions beyond the segment’s range.
+
+Dead/stale readers (beyond TTL) are ignored for retention. This prevents indefinite disk growth after crashed processes.
+
+9.4 Clean shutdown deregistration
+
+On clean shutdown, readers should delete their own meta file to avoid clutter. TTL remains necessary for crash safety.
+
+⸻
+
+10. Durability Semantics (Normative)
+
+Durability tiers are explicit:
+	•	append():
+	•	makes the record visible after commit
+	•	survives process crash (data typically remains in page cache)
+	•	no strict guarantee under power loss
+	•	flush_async():
+	•	calls msync(MS_ASYNC) on recent ranges
+	•	reduces risk but no strict power-loss guarantee
+	•	flush_sync():
+	•	calls msync(MS_SYNC) on recent ranges
+	•	aims for on-disk persistence of data pages
+	•	metadata persistence may additionally require fdatasync() at roll/checkpoint boundaries
+
+Operational guidance:
+	•	msync(MS_SYNC) can be millisecond-scale; batch flushes (e.g., every 100–1000 messages or every 10–50ms) rather than flushing every message.
+
+⸻
+
+11. API Design
+
+11.1 chronicle-core API (data plane)
+
+pub struct Queue;
+
+pub struct QueueWriter;
+
+pub struct QueueReader;
+
+pub enum WaitStrategy {
+    Hybrid { spin_us: u32 },         // spin then futex
+    BusyPoll(std::time::Duration),   // no futex
 }
 
-pub struct QueueReader {
-    queue: Arc<Queue>,
-    read_index: u64,
-    reader_meta: ReaderMeta,
-}
+Core operations:
 
-pub enum Notifier {
-    EventFd(RawFd),
-    BusyPoll(Duration),
-}
-```
-
-### Core API
-```rust
 impl Queue {
-    pub fn open(path: impl AsRef<Path>) -> Result<Arc<Self>>;
-    pub fn writer(&self) -> QueueWriter;
-    pub fn reader(&self, name: &str) -> Result<QueueReader>;
+    pub fn open_publisher(path: impl AsRef<std::path::Path>) -> Result<QueueWriter>;
+    pub fn open_subscriber(path: impl AsRef<std::path::Path>, reader: &str) -> Result<QueueReader>;
 }
 
 impl QueueWriter {
-    pub fn append(&self, payload: &[u8]) -> Result<()>;
-    pub fn flush(&self) -> Result<()>;
+    pub fn append(&mut self, type_id: u16, payload: &[u8]) -> Result<()>;
+    pub fn flush_async(&mut self) -> Result<()>;
+    pub fn flush_sync(&mut self) -> Result<()>;
+}
+
+pub struct MessageView<'a> {
+    pub seq: u64,
+    pub timestamp_ns: u64,
+    pub type_id: u16,
+    pub payload: &'a [u8],
 }
 
 impl QueueReader {
-    pub fn next(&mut self) -> Result<Option<&[u8]>>;
+    pub fn next(&mut self) -> Result<Option<MessageView<'_>>>;
     pub fn commit(&mut self) -> Result<()>;
-    pub fn wait(&self) -> Result<()>; // blocks via eventfd
+    pub fn wait(&self, timeout: Option<std::time::Duration>) -> Result<()>;
 }
-```
 
-## 9. Multi-Queue Fan-In (Fan-In Reader)
-**Pattern:** many writers → one reader.
-Each writer appends to its own queue directory.
+11.2 chronicle-bus API (control plane helper; intentionally thin)
 
-Fan-in reader merges by:
-1. Peeking each queue’s next header.
-2. Selecting the smallest `timestamp_ns`.
-3. Processing and advancing that reader.
+11.2.1 Layout and endpoints
+chronicle-bus standardizes where queues live and how they are named.
 
-Supports deterministic, timestamp-ordered message processing.
+pub struct BusLayout {
+    pub root: std::path::PathBuf,  // e.g. /var/lib/hft_bus
+}
 
-### HFT scenario mapping
-- Market-data ingest: one queue per venue/feed; a single fan-in reader merges by `timestamp_ns` for a unified stream.
-- Order routing: strategy writes to one queue; multiple gateway readers consume with distinct reader names (multi-subscriber).
-- Strategy fan-out: feed handlers write per-feed queues; each strategy builds its own fan-in reader and keeps independent progress.
-- Risk aggregation: each strategy writes fills/positions to its own queue; risk service merges them by timestamp.
-- Compliance/audit: each service writes to its own queue; recorder merges into a single ordered audit stream.
-- Replay/backtest: playback processes write historical feeds to per-feed queues with recorded timestamps; fan-in reproduces a deterministic stream.
+pub struct StrategyId(pub String);
 
-### Queue discovery for multi-process fan-in
-Order routing and other HFT control-plane services are typically long-lived processes that must attach to many strategy queues without restart. Discovery is therefore required to add new sources dynamically while keeping writers isolated (one writer per queue).
+pub struct StrategyEndpoints {
+    pub orders_out: std::path::PathBuf, // strategy -> router
+    pub orders_in: std::path::PathBuf,  // router -> strategy
+}
 
-**Proposed approach (directory + READY marker):**
-- **Directory convention:** all strategy queues live under a shared root, e.g. `orders/strategies/<strategy_id>/`.
-- **Startup handshake:** strategy initializes its queue via `Queue::open`, then creates a `READY` file using atomic rename (`READY.tmp` → `READY`). The file should include a minimal version payload (for example `version=1` on the first line, or a small JSON blob like `{"version":1,"pid":123,"created_at":"..."}`).
-- **Router discovery:** establish a cross-platform filesystem watcher first (use a library such as `notify` rather than raw `inotify`), then scan for subdirectories containing `READY`, then process any events that arrived during the scan. The router must deduplicate so a queue discovered by scan and watch is only attached once.
-- **Attach reader:** open the queue and create a `QueueReader` with a unique router name (e.g. `router-<pid>`), then register it with the fan-in merge layer. If the READY version is newer than the router supports, skip the queue and log a warning rather than crashing.
+impl BusLayout {
+    pub fn new(root: impl Into<std::path::PathBuf>) -> Self;
 
-**Removal / shutdown:** directory deletion is the removal signal. When a queue directory is removed, the router must drop the corresponding `QueueReader` to release mmaps and file descriptors. Leaving idle readers in a long-lived router is not acceptable due to fd exhaustion risk.
+    pub fn strategy_endpoints(&self, id: &StrategyId) -> StrategyEndpoints;
 
-**Safety / failure modes:**
-- If a strategy crashes before `READY`, the router never attaches.
-- If it crashes after `READY`, the router can still consume committed data.
-- Router restart re-establishes the watcher, rescans, and resumes from per-reader metadata.
-- Segment size checks still guard against partially initialized files.
+    pub fn mark_ready(&self, endpoint_dir: &std::path::Path) -> std::io::Result<()>;
+    pub fn write_lease(&self, endpoint_dir: &std::path::Path, payload: &[u8]) -> std::io::Result<()>;
+}
 
-**Alternatives (not chosen yet):**
-- Manifest file (`queues.json`) with atomic updates.
-- Control queue (registry bus) for announcements.
-- Periodic scan only (simplest, slower to detect).
+READY semantics:
+	•	Strategy/router writes READY.tmp then rename() to READY atomically once initialization is complete.
 
-**Open questions for review:**
-- Is a manifest-based option needed for multi-host deployments, or is filesystem discovery sufficient?
+LEASE semantics (optional but recommended):
+	•	Process periodically updates LEASE content with {pid, epoch, timestamp_ns}; used for diagnostics and policy.
 
-## 10. Memory Model Summary
-| Operation | Ordering | Reason |
-|------------|-----------|--------|
-| Writer: append + flag | `Release` | ensure payload visible |
-| Reader: poll flag | `Acquire` | ensure payload consistent |
-| Writer index update | `AcqRel` | atomic append ordering |
+11.2.2 RAII registration (for cleanup, not orchestration)
+The bus helper provides a small RAII handle that:
+	•	creates reader meta directory if needed
+	•	registers heartbeat scheduling hooks (caller still drives the loop)
+	•	deletes meta on clean shutdown (best-effort)
 
-## 11. Module Layout (proposed crate structure)
-```
-src/
-├── lib.rs
-├── mmap.rs
-├── header.rs
-├── writer.rs
-├── reader.rs
-├── notifier.rs
-├── merge.rs
-├── segment.rs
-└── retention.rs
-```
+pub struct ReaderRegistration {
+    reader_name: String,
+    meta_path: std::path::PathBuf,
+}
 
-## 12. Next Steps
-1. Implement `mmap.rs` (open + fallocate + msync).
-2. Build minimal writer/reader loop.
-3. Add eventfd-based blocking.
-4. Integrate timestamp-merge reader.
-5. Prototype with micro-benchmarks.
+impl ReaderRegistration {
+    pub fn register(queue_dir: &std::path::Path, reader_name: &str) -> std::io::Result<Self>;
+    pub fn meta_path(&self) -> &std::path::Path;
+}
+
+impl Drop for ReaderRegistration {
+    fn drop(&mut self) {
+        // best-effort: delete meta file on clean shutdown
+        // (TTL still required for crash safety)
+    }
+}
+
+This remains thin: it does not start threads, does not own event loops, and does not supervise processes.
+
+11.2.3 Router discovery helper (scan + watch + dedup)
+
+pub struct RouterDiscovery;
+
+pub enum DiscoveryEvent {
+    Added { strategy: StrategyId, orders_out: std::path::PathBuf },
+    Removed { strategy: StrategyId },
+}
+
+impl RouterDiscovery {
+    pub fn new(layout: BusLayout) -> std::io::Result<Self>;
+
+    /// Returns newly added/removed strategy queues since the last poll.
+    pub fn poll(&mut self) -> std::io::Result<Vec<DiscoveryEvent>>;
+}
+
+Implementation notes:
+	•	Use a filesystem watcher library plus an initial scan.
+	•	Deduplicate scan results vs watch events.
+	•	On removal, callers must drop associated QueueReader to release mmaps/FDs.
+
+⸻
+
+12. Multi-Process HFT Topology (Single Host)
+
+12.1 Market feed → strategies (broadcast)
+	•	Feed process: single writer to per-feed queue(s)
+	•	Strategies: many readers with independent offsets
+
+12.2 Strategies → router (fan-in)
+	•	Each strategy writes to its own orders_out queue
+	•	Router discovers and attaches to all orders_out queues, merges
+
+12.3 Router → strategies (ack/fill/control)
+	•	Router writes to each strategy’s orders_in
+	•	Each strategy reads its own orders_in
+
+⸻
+
+13. Workspace / Modules
+
+chronicle-rs/
+├── crates/
+│   ├── chronicle-core/
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── control.rs
+│   │       ├── format.rs
+│   │       ├── segment.rs
+│   │       ├── writer.rs
+│   │       ├── reader.rs
+│   │       ├── retention.rs
+│   │       └── wait.rs
+│   └── chronicle-bus/
+│       └── src/
+│           ├── lib.rs
+│           ├── layout.rs
+│           ├── ready.rs
+│           ├── lease.rs
+│           ├── discovery.rs
+│           └── registration.rs
+└── docs/
+    └── DESIGN.md
+
+
+⸻
+
+14. Testing Requirements (MVP)
+	•	Memory model invariants:
+	•	Reader never reads payload without observing commit (debug assertions)
+	•	Crash recovery:
+	•	kill -9 writer at random points; readers recover, writer restarts and scans tail
+	•	Segment rolling under load:
+	•	read/write concurrently through roll boundaries
+	•	Futex correctness:
+	•	timeouts wake; writer crash does not deadlock readers
+	•	Retention and dead readers:
+	•	stale reader meta does not block cleanup after TTL
+	•	Disk full:
+	•	fallocate() failure surfaces promptly and predictably
+
+
