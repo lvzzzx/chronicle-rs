@@ -10,6 +10,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Phase 3 (Reader Path & Per-Reader Metadata) completed; ExecPlan in `execplans/phase-3-reader-path.md`.
 - Phase 4 (Event Notification) completed; ExecPlan in `execplans/phase-4-event-notification.md`.
 - Phase 5 (Segment Rolling & Retention) completed; ExecPlan in `execplans/phase-5-segment-rolling.md`.
+- Phase 6 (Multi-Queue Fan-In) completed; ExecPlan in `execplans/phase-6-multi-queue-fanin.md`.
 
 ## Phases
 
@@ -41,7 +42,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Deliverables: merge logic across queues by timestamp.
 - Validation: deterministic ordering across multiple writers.
 
-### Phase 7 — Queue Discovery for Multi-Process Fan-In
+### Phase 7 — Queue Discovery for Multi-Process Fan-In (chronicle-bus)
 - Deliverables: directory + READY marker protocol; cross-platform watcher; attach/detach logic.
 - Validation: router attaches/detaches queues dynamically without restart; handles create/delete races safely.
 
