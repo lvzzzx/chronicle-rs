@@ -46,8 +46,8 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Deliverables: directory + READY marker protocol; cross-platform watcher; attach/detach logic.
 - Validation: router attaches/detaches queues dynamically without restart; handles create/delete races safely.
 
-### Phase 8 — Hardening & Benchmarks
-- Deliverables: stress tests, soak tests, perf benchmarks.
+### Phase 8 — Hardening & Benchmarks (chronicle-core)
+- Deliverables: data-plane stress tests, soak tests, perf benchmarks.
 - Validation: stable throughput/latency and test coverage of edge cases.
 
 ### Phase 9 — Docs & Operational Guidance

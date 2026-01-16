@@ -1,4 +1,4 @@
-# Align Core Protocol with Updated Design (commit_len, control.meta, recovery, retention)
+# Archived: Align Core Protocol with Updated Design (commit_len, control.meta, recovery, retention)
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
@@ -6,7 +6,7 @@ This document must be maintained in accordance with `PLANS.md` at the repository
 
 ## Purpose / Big Picture
 
-This phase aligns the implementation with the approved architecture in `docs/DESIGN.md`. After this change, the queue uses the commit word (`commit_len`) protocol, supports PAD records to safely repair crash tails, initializes and uses a shared `control.meta` block with futex-based waits on Linux, and enforces retention that ignores dead and lagging readers. A developer can verify the change by appending messages, observing readers skip PAD records, exercising wait/notify behavior, and confirming retention skips stalled readers beyond the lag threshold.
+This plan is archived. The protocol-alignment work it describes has been completed and is now part of the `chronicle-core` baseline. The roadmap Phase 8 is now “Hardening & Benchmarks,” so this document is retained only as a historical record of the alignment work (completed on 2026-01-16). A developer can still verify the behavior by appending messages, observing readers skip PAD records, exercising wait/notify behavior, and confirming retention skips stalled readers beyond the lag threshold.
 
 ## Progress
 
@@ -16,6 +16,7 @@ This phase aligns the implementation with the approved architecture in `docs/DES
 - [x] (2026-01-16 01:30Z) Implemented recovery scan + tail repair (PAD or seal) on open_publisher.
 - [x] (2026-01-16 01:40Z) Upgraded reader metadata to include heartbeat + CRC and updated retention for TTL + MAX_RETENTION_LAG.
 - [x] (2026-01-16 01:50Z) Ran `cargo test` and recorded a green run in Artifacts.
+- [x] (2026-01-16 21:30Z) Marked this plan archived; Phase 8 on the roadmap is now Hardening & Benchmarks.
 
 ## Surprises & Discoveries
 
@@ -39,6 +40,9 @@ This phase aligns the implementation with the approved architecture in `docs/DES
 - Decision: When no active readers remain, retention treats `head_segment` as the minimum to allow deletion of older segments.
   Rationale: Prevents unbounded disk growth when all readers are dead or lagging beyond the retention threshold.
   Date/Author: 2026-01-16, Codex
+- Decision: Archive this plan to avoid conflict with the roadmap’s Phase 8 (Hardening & Benchmarks).
+  Rationale: The roadmap was updated and this work is already completed; keeping it as an active Phase 8 plan would be misleading.
+  Date/Author: 2026-01-16, Codex
 
 ## Outcomes & Retrospective
 
@@ -59,7 +63,7 @@ We will introduce a new `src/control.rs` module for the control block, and a `sr
 
 ## Plan of Work
 
-First, update the record format and header helpers to match the design. The commit word becomes `commit_len` at offset 0, and record length uses 64-byte alignment. Define constants for header size, record alignment, and PAD type id. Update writer and reader logic to use `commit_len` and skip PAD records. Update tests that assert flags or header size to instead assert commit_len semantics and PAD skipping.
+This section is retained for historical context only; no further work is planned in `chronicle-core` for this phase.
 
 Next, implement `control.meta` as a small shared mmap file and add a `ControlBlock` view that exposes atomic reads/writes of `current_segment`, `write_offset`, and `notify_seq`, with proper initialization via `init_state` and `magic/version` checks. Wire `Queue::open_publisher` and `Queue::open_subscriber` to initialize or wait on this block. Implement a Linux futex wait/wake helper and have `QueueReader::wait` use it via the control block’s `notify_seq`. On non-Linux builds, keep a short sleep fallback so tests can run locally.
 
@@ -69,7 +73,7 @@ Finally, upgrade reader metadata to a double-slot file with generation and CRC, 
 
 ## Concrete Steps
 
-Implement the changes in this order:
+No further steps in this repository. The listed edits below reflect the already-completed alignment work.
 
   - `src/header.rs`: replace flags/length with commit_len-based layout helpers and constants. Add `const PAD_TYPE_ID: u16 = 0xFFFF` and `const HEADER_SIZE: usize = 64` plus `const RECORD_ALIGN: usize = 64` and `const MAX_PAYLOAD_LEN: usize = u32::MAX as usize - 1`.
   - `src/segment.rs`: add segment header constants (`SEG_MAGIC`, `SEG_VERSION`, `SEG_FLAG_SEALED`), `SEG_DATA_OFFSET`, and helpers to write/read the segment header and seal it. Ensure new segments are created with a header and data offset set to 64.
@@ -89,7 +93,7 @@ Run the test suite from the repository root after each major step:
 
 ## Validation and Acceptance
 
-Acceptance is met when:
+Acceptance for this archived phase was met when:
 
 - `cargo test` is green and new tests cover PAD skipping, recovery tail repair, and retention lag policy.
 - Appends write commit_len = payload_len + 1 and readers only consume records when commit_len > 0.
@@ -99,7 +103,7 @@ Acceptance is met when:
 
 ## Idempotence and Recovery
 
-All steps are safe to rerun. New metadata formats are designed to tolerate partial writes by using a double-slot + CRC scheme. If tests fail due to stale on-disk formats, delete the temporary test directories (created via `tempfile`) and rerun. If control.meta is corrupt, delete the queue directory and recreate it via open_publisher.
+All steps remain safe to rerun. New metadata formats are designed to tolerate partial writes by using a double-slot + CRC scheme. If tests fail due to stale on-disk formats, delete the temporary test directories (created via `tempfile`) and rerun. If control.meta is corrupt, delete the queue directory and recreate it via open_publisher.
 
 ## Artifacts and Notes
 
@@ -177,3 +181,4 @@ Two slots are stored back-to-back; the reader loads the highest generation with 
 
 Change note: ExecPlan created for protocol alignment phase (2026-01-16).
 Change note: Updated progress, decisions, and artifacts after implementation and green tests (2026-01-16).
+Change note: 2026-01-16 archived this plan to resolve the phase-numbering conflict with Phase 8 (Hardening & Benchmarks).
