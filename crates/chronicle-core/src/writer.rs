@@ -1,26 +1,59 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
-#[cfg(target_os = "linux")]
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::control::ControlFile;
-use crate::header::{
-    MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, PAD_TYPE_ID, RECORD_ALIGN,
-};
+use crate::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, RECORD_ALIGN};
 use crate::mmap::MmapFile;
 use crate::segment::{
     create_segment, load_index, open_segment, read_segment_header, seal_segment, segment_path,
     store_index, SegmentIndex, SEG_DATA_OFFSET, SEG_FLAG_SEALED, SEGMENT_SIZE,
 };
 use crate::wait::futex_wake;
+use crate::writer_lock;
 use crate::{Error, Result};
 
 const INDEX_FILE: &str = "index.meta";
 const CONTROL_FILE: &str = "control.meta";
 const WRITER_LOCK_FILE: &str = "writer.lock";
+const BACKPRESSURE_POLL_US: u64 = 100;
+
+#[derive(Clone, Copy, Debug)]
+pub enum BackpressurePolicy {
+    FailFast,
+    Block { timeout: Option<Duration>, poll_interval: Duration },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WriterConfig {
+    pub max_segments: Option<u64>,
+    pub max_bytes: Option<u64>,
+    pub backpressure: BackpressurePolicy,
+}
+
+impl Default for WriterConfig {
+    fn default() -> Self {
+        Self {
+            max_segments: None,
+            max_bytes: None,
+            backpressure: BackpressurePolicy::FailFast,
+        }
+    }
+}
+
+impl WriterConfig {
+    pub fn blocking(max_segments: Option<u64>, max_bytes: Option<u64>, timeout: Option<Duration>) -> Self {
+        Self {
+            max_segments,
+            max_bytes,
+            backpressure: BackpressurePolicy::Block {
+                timeout,
+                poll_interval: Duration::from_micros(BACKPRESSURE_POLL_US),
+            },
+        }
+    }
+}
 
 pub struct Queue;
 
@@ -31,11 +64,19 @@ pub struct QueueWriter {
     segment_id: u32,
     write_offset: u64,
     seq: u64,
+    config: WriterConfig,
     _lock: WriterLock,
 }
 
 impl Queue {
     pub fn open_publisher(path: impl AsRef<Path>) -> Result<QueueWriter> {
+        Self::open_publisher_with_config(path, WriterConfig::default())
+    }
+
+    pub fn open_publisher_with_config(
+        path: impl AsRef<Path>,
+        config: WriterConfig,
+    ) -> Result<QueueWriter> {
         let path = path.as_ref().to_path_buf();
         std::fs::create_dir_all(&path)?;
 
@@ -52,6 +93,7 @@ impl Queue {
         let writer_epoch = control.writer_epoch().wrapping_add(1).max(1);
         control.set_writer_epoch(writer_epoch);
         lock.update_epoch(writer_epoch)?;
+        control.set_writer_heartbeat_ns(now_ns()?);
 
         let index_path = path.join(INDEX_FILE);
         let index = load_index(&index_path)?;
@@ -103,6 +145,7 @@ impl Queue {
             segment_id,
             write_offset,
             seq: 0,
+            config,
             _lock: lock,
         })
     }
@@ -131,6 +174,8 @@ impl QueueWriter {
         if record_len > SEGMENT_SIZE - SEG_DATA_OFFSET {
             return Err(Error::PayloadTooLarge);
         }
+
+        self.ensure_capacity(record_len)?;
 
         if (self.write_offset as usize) + record_len > SEGMENT_SIZE {
             self.roll_segment()?;
@@ -165,12 +210,90 @@ impl QueueWriter {
             .checked_add(record_len as u64)
             .ok_or(Error::Corrupt("write offset overflow"))?;
         self.control.set_write_offset(self.write_offset);
+        self.control.set_writer_heartbeat_ns(now_ns()?);
 
         self.control
             .notify_seq()
             .fetch_add(1, Ordering::Relaxed);
         futex_wake(self.control.notify_seq())?;
         Ok(())
+    }
+
+    fn ensure_capacity(&mut self, record_len: usize) -> Result<()> {
+        if self.config.max_segments.is_none() && self.config.max_bytes.is_none() {
+            return Ok(());
+        }
+
+        let deadline = match self.config.backpressure {
+            BackpressurePolicy::FailFast => None,
+            BackpressurePolicy::Block { timeout, .. } => timeout.map(|t| Instant::now() + t),
+        };
+
+        loop {
+            if self.has_capacity(record_len)? {
+                return Ok(());
+            }
+
+            let _ = crate::retention::cleanup_segments(
+                &self.path,
+                self.segment_id as u64,
+                self.write_offset,
+            )?;
+
+            if self.has_capacity(record_len)? {
+                return Ok(());
+            }
+
+            match self.config.backpressure {
+                BackpressurePolicy::FailFast => return Err(Error::QueueFull),
+                BackpressurePolicy::Block {
+                    timeout: _,
+                    poll_interval,
+                } => {
+                    if let Some(deadline) = deadline {
+                        if Instant::now() >= deadline {
+                            return Err(Error::QueueFull);
+                        }
+                    }
+                    std::thread::sleep(poll_interval);
+                }
+            }
+        }
+    }
+
+    fn has_capacity(&self, record_len: usize) -> Result<bool> {
+        let head_segment = self.segment_id as u64;
+        let head_offset = self.write_offset;
+        let min_pos = crate::retention::min_live_reader_position(
+            &self.path,
+            head_segment,
+            head_offset,
+        )?;
+        let (next_segment, next_offset) = if (self.write_offset as usize) + record_len > SEGMENT_SIZE
+        {
+            (head_segment + 1, SEG_DATA_OFFSET as u64 + record_len as u64)
+        } else {
+            (head_segment, head_offset + record_len as u64)
+        };
+        let head_after = next_segment
+            .saturating_mul(SEGMENT_SIZE as u64)
+            .saturating_add(next_offset);
+
+        let bytes_ok = match self.config.max_bytes {
+            Some(max) => head_after.saturating_sub(min_pos) <= max,
+            None => true,
+        };
+
+        let segments_ok = match self.config.max_segments {
+            Some(max) => {
+                let min_segment = min_pos / SEGMENT_SIZE as u64;
+                let used = next_segment.saturating_sub(min_segment) + 1;
+                used <= max
+            }
+            None => true,
+        };
+
+        Ok(bytes_ok && segments_ok)
     }
 
     pub fn flush_async(&mut self) -> Result<()> {
@@ -202,6 +325,7 @@ impl QueueWriter {
         self.segment_id = next_segment;
         self.write_offset = SEG_DATA_OFFSET as u64;
         self.mmap = open_segment(&self.path, next_segment as u64)?;
+        self.control.set_writer_heartbeat_ns(now_ns()?);
 
         self.control
             .notify_seq()
@@ -223,11 +347,11 @@ impl WriterLock {
             .write(true)
             .open(path)?;
         loop {
-            if try_lock(&file)? {
-                write_lock_record(&file, writer_epoch)?;
+            if writer_lock::try_lock(&file)? {
+                writer_lock::write_lock_record(&file, writer_epoch)?;
                 return Ok(Self { _file: file });
             }
-            if !lock_owner_alive(&file)? {
+            if !writer_lock::writer_alive(path)? {
                 continue;
             }
             return Err(Error::WriterAlreadyActive);
@@ -235,7 +359,7 @@ impl WriterLock {
     }
 
     fn update_epoch(&self, writer_epoch: u64) -> Result<()> {
-        write_lock_record(&self._file, writer_epoch)
+        writer_lock::write_lock_record(&self._file, writer_epoch)
     }
 }
 
@@ -244,6 +368,14 @@ fn align_up(value: usize, align: usize) -> usize {
         return value;
     }
     (value + align - 1) & !(align - 1)
+}
+
+fn now_ns() -> Result<u64> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::Unsupported("system time before UNIX epoch"))?;
+    u64::try_from(timestamp.as_nanos())
+        .map_err(|_| Error::Unsupported("system time exceeds timestamp range"))
 }
 
 fn scan_segment_tail(mmap: &MmapFile, start_offset: usize) -> Result<(usize, bool)> {
@@ -292,176 +424,12 @@ fn repair_tail_and_roll(mmap: &mut MmapFile, root: &Path, segment_id: u32) -> Re
         return Ok(Some(next_segment));
     }
 
-    let mut end_offset = SEG_DATA_OFFSET;
-    let mut offset = SEG_DATA_OFFSET;
-    while offset + HEADER_SIZE <= SEGMENT_SIZE {
-        let commit = MessageHeader::load_commit_len(&mmap.as_slice()[offset] as *const u8);
-        if commit == 0 {
-            end_offset = offset;
-            break;
-        }
-        let payload_len = match MessageHeader::payload_len_from_commit(commit) {
-            Ok(len) => len,
-            Err(_) => {
-                end_offset = offset;
-                break;
-            }
-        };
-        let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
-        if offset + record_len > SEGMENT_SIZE {
-            end_offset = offset;
-            break;
-        }
-        offset += record_len;
-        end_offset = offset;
-    }
-
-    if end_offset + HEADER_SIZE > SEGMENT_SIZE {
-        seal_segment(mmap)?;
-        let next_segment = segment_id + 1;
-        create_segment(root, next_segment as u64)?;
-        return Ok(Some(next_segment));
-    }
-
-    let remaining = SEGMENT_SIZE - end_offset;
-    if remaining >= HEADER_SIZE {
-        let payload_len = remaining - HEADER_SIZE;
-        let commit_len = MessageHeader::commit_len_for_payload(payload_len)?;
-        let header = MessageHeader::new_uncommitted(0, 0, PAD_TYPE_ID, 0, 0);
-        let header_bytes = header.to_bytes();
-        mmap.range_mut(end_offset, HEADER_SIZE)?.copy_from_slice(&header_bytes);
-        if payload_len > 0 {
-            mmap.range_mut(end_offset + HEADER_SIZE, payload_len)?.fill(0);
-        }
-        let header_ptr = unsafe { mmap.as_mut_slice().as_mut_ptr().add(end_offset) };
-        MessageHeader::store_commit_len(header_ptr, commit_len);
-    }
-
-    seal_segment(mmap)?;
+    crate::segment::repair_unsealed_tail(mmap)?;
     let next_segment = segment_id + 1;
     create_segment(root, next_segment as u64)?;
     Ok(Some(next_segment))
 }
 
-#[cfg(target_os = "linux")]
-fn try_lock(file: &File) -> Result<bool> {
-    let res = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if res == 0 {
-        return Ok(true);
-    }
-    let err = std::io::Error::last_os_error();
-    if err.kind() == std::io::ErrorKind::WouldBlock {
-        return Ok(false);
-    }
-    Err(Error::Io(err))
-}
-
-#[cfg(target_os = "linux")]
-fn lock_owner_alive(file: &File) -> Result<bool> {
-    let (pid, start_time) = read_lock_record(file)?;
-    if pid == 0 {
-        return Ok(false);
-    }
-    let proc_start = proc_start_time(pid)?;
-    Ok(proc_start == start_time)
-}
-
-#[cfg(target_os = "linux")]
-fn proc_start_time(pid: u32) -> Result<u64> {
-    let path = format!("/proc/{pid}/stat");
-    let mut contents = String::new();
-    File::open(&path)?.read_to_string(&mut contents)?;
-    let end = contents.rfind(')').ok_or(Error::CorruptMetadata("stat parse"))?;
-    let after = &contents[end + 1..];
-    let mut fields = after.split_whitespace();
-    for _ in 0..20 {
-        fields.next();
-    }
-    let start = fields
-        .next()
-        .ok_or(Error::CorruptMetadata("stat missing starttime"))?;
-    let start_time = start
-        .parse::<u64>()
-        .map_err(|_| Error::CorruptMetadata("stat starttime invalid"))?;
-    Ok(start_time)
-}
-
-#[cfg(target_os = "linux")]
-fn write_lock_record(file: &File, writer_epoch: u64) -> Result<()> {
-    let pid = std::process::id();
-    let start_time = proc_start_time(pid)?;
-    let record = format!("{pid} {start_time} {writer_epoch}\n");
-    let mut handle = file.try_clone()?;
-    handle.set_len(0)?;
-    handle.seek(SeekFrom::Start(0))?;
-    handle.write_all(record.as_bytes())?;
-    handle.sync_all()?;
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn read_lock_record(file: &File) -> Result<(u32, u64)> {
-    let mut contents = String::new();
-    let mut clone = file.try_clone()?;
-    clone.seek(SeekFrom::Start(0))?;
-    clone.read_to_string(&mut contents)?;
-    let mut parts = contents.split_whitespace();
-    let pid = parts
-        .next()
-        .unwrap_or("0")
-        .parse::<u32>()
-        .unwrap_or(0);
-    let start_time = parts
-        .next()
-        .unwrap_or("0")
-        .parse::<u64>()
-        .unwrap_or(0);
-    Ok((pid, start_time))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn try_lock(file: &File) -> Result<bool> {
-    let res = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if res == 0 {
-        return Ok(true);
-    }
-    let err = std::io::Error::last_os_error();
-    if err.kind() == std::io::ErrorKind::WouldBlock {
-        return Ok(false);
-    }
-    Err(Error::Io(err))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn lock_owner_alive(_file: &File) -> Result<bool> {
-    Ok(true)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn write_lock_record(file: &File, writer_epoch: u64) -> Result<()> {
-    let pid = std::process::id();
-    let record = format!("{pid} 0 {writer_epoch}\n");
-    let mut handle = file.try_clone()?;
-    handle.set_len(0)?;
-    handle.seek(SeekFrom::Start(0))?;
-    handle.write_all(record.as_bytes())?;
-    handle.sync_all()?;
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-#[allow(dead_code)]
-fn read_lock_record(_file: &File) -> Result<(u32, u64)> {
-    Ok((0, 0))
-}
-
-#[cfg(not(target_os = "linux"))]
-#[allow(dead_code)]
-fn proc_start_time(_pid: u32) -> Result<u64> {
-    Ok(0)
-}
-
-use std::os::unix::io::AsRawFd;
 
 #[cfg(test)]
 mod tests {

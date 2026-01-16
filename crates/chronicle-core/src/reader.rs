@@ -13,10 +13,13 @@ use crate::segment::{
 };
 use crate::wait::futex_wait;
 use crate::writer::Queue;
+use crate::writer_lock;
 use crate::{Error, Result};
 
 const READERS_DIR: &str = "readers";
+const WRITER_LOCK_FILE: &str = "writer.lock";
 const DEFAULT_SPIN_US: u32 = 10;
+const WRITER_TTL_NS: u64 = 5_000_000_000;
 
 pub struct MessageView<'a> {
     pub seq: u64,
@@ -190,18 +193,34 @@ impl QueueReader {
 
     fn advance_segment(&mut self) -> Result<bool> {
         let header = read_segment_header(&self.mmap)?;
-        if (header.flags & SEG_FLAG_SEALED) == 0 {
-            return Ok(false);
-        }
         let next_segment = self.segment_id + 1;
         let next_path = segment_path(&self.path, next_segment as u64);
         if !next_path.exists() {
             return Ok(false);
         }
+        if (header.flags & SEG_FLAG_SEALED) == 0 {
+            if !self.writer_dead()? {
+                return Ok(false);
+            }
+            crate::segment::repair_unsealed_tail(&mut self.mmap)?;
+        }
         self.mmap = open_segment(&self.path, next_segment as u64)?;
         self.segment_id = next_segment;
         self.read_offset = SEG_DATA_OFFSET as u64;
         Ok(true)
+    }
+
+    fn writer_dead(&self) -> Result<bool> {
+        let lock_path = self.path.join(WRITER_LOCK_FILE);
+        if writer_lock::writer_alive(&lock_path)? {
+            return Ok(false);
+        }
+        let heartbeat = self.control.writer_heartbeat_ns();
+        if heartbeat == 0 {
+            return Ok(true);
+        }
+        let now = now_ns()?;
+        Ok(now.saturating_sub(heartbeat) > WRITER_TTL_NS)
     }
 }
 

@@ -13,7 +13,8 @@ pub mod retention;
 pub mod segment;
 pub mod wait;
 pub mod writer;
+mod writer_lock;
 
 pub use error::{Error, Result};
 pub use reader::{MessageView, QueueReader, WaitStrategy};
-pub use writer::{Queue, QueueWriter};
+pub use writer::{BackpressurePolicy, Queue, QueueWriter, WriterConfig};

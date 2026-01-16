@@ -23,8 +23,9 @@ pub struct ControlBlock {
 
     // Writer-hot.
     pub write_offset: AtomicU64,
+    pub writer_heartbeat_ns: AtomicU64,
     pub notify_seq: AtomicU32,
-    pub _pad3: [u8; 116],
+    pub _pad3: [u8; 108],
 }
 
 pub struct ControlFile {
@@ -44,6 +45,7 @@ impl ControlFile {
         block.current_segment.store(current_segment, Ordering::Relaxed);
         block.write_offset.store(write_offset, Ordering::Relaxed);
         block.writer_epoch.store(writer_epoch, Ordering::Relaxed);
+        block.writer_heartbeat_ns.store(0, Ordering::Relaxed);
         block.magic.store(CTRL_MAGIC, Ordering::Relaxed);
         block.init_state.store(2, Ordering::Release);
         std::fs::rename(tmp_path, path)?;
@@ -100,6 +102,16 @@ impl ControlFile {
 
     pub fn notify_seq(&self) -> &AtomicU32 {
         &self.block().notify_seq
+    }
+
+    pub fn writer_heartbeat_ns(&self) -> u64 {
+        self.block().writer_heartbeat_ns.load(Ordering::Acquire)
+    }
+
+    pub fn set_writer_heartbeat_ns(&self, heartbeat: u64) {
+        self.block()
+            .writer_heartbeat_ns
+            .store(heartbeat, Ordering::Release);
     }
 
     pub fn writer_epoch(&self) -> u64 {

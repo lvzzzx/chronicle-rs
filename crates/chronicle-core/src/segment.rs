@@ -2,6 +2,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use crate::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, PAD_TYPE_ID, RECORD_ALIGN};
 use crate::mmap::MmapFile;
 use crate::{Error, Result};
 
@@ -220,6 +221,67 @@ pub fn seal_segment(mmap: &mut MmapFile) -> Result<()> {
     }
     write_segment_header(mmap, header.segment_id, header.flags | SEG_FLAG_SEALED)?;
     Ok(())
+}
+
+pub fn repair_unsealed_tail(mmap: &mut MmapFile) -> Result<()> {
+    let header = read_segment_header(mmap)?;
+    if (header.flags & SEG_FLAG_SEALED) != 0 {
+        return Ok(());
+    }
+
+    let mut end_offset = SEG_DATA_OFFSET;
+    let mut offset = SEG_DATA_OFFSET;
+    while offset + HEADER_SIZE <= SEGMENT_SIZE {
+        let commit = MessageHeader::load_commit_len(&mmap.as_slice()[offset] as *const u8);
+        if commit == 0 {
+            end_offset = offset;
+            break;
+        }
+        let payload_len = match MessageHeader::payload_len_from_commit(commit) {
+            Ok(len) => len,
+            Err(_) => {
+                end_offset = offset;
+                break;
+            }
+        };
+        if payload_len > MAX_PAYLOAD_LEN {
+            end_offset = offset;
+            break;
+        }
+        let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
+        if offset + record_len > SEGMENT_SIZE {
+            end_offset = offset;
+            break;
+        }
+        offset += record_len;
+        end_offset = offset;
+    }
+
+    if end_offset + HEADER_SIZE <= SEGMENT_SIZE {
+        let remaining = SEGMENT_SIZE - end_offset;
+        if remaining >= HEADER_SIZE {
+            let payload_len = remaining - HEADER_SIZE;
+            let commit_len = MessageHeader::commit_len_for_payload(payload_len)?;
+            let header = MessageHeader::new_uncommitted(0, 0, PAD_TYPE_ID, 0, 0);
+            let header_bytes = header.to_bytes();
+            mmap.range_mut(end_offset, HEADER_SIZE)?.copy_from_slice(&header_bytes);
+            if payload_len > 0 {
+                mmap.range_mut(end_offset + HEADER_SIZE, payload_len)?.fill(0);
+            }
+            let header_ptr = unsafe { mmap.as_mut_slice().as_mut_ptr().add(end_offset) };
+            MessageHeader::store_commit_len(header_ptr, commit_len);
+        }
+    }
+
+    seal_segment(mmap)?;
+    Ok(())
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    if align == 0 {
+        return value;
+    }
+    (value + align - 1) & !(align - 1)
 }
 
 fn reader_meta_slot_size() -> usize {
