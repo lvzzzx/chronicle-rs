@@ -128,7 +128,7 @@ impl QueueWriter {
             return Err(Error::PayloadTooLarge);
         }
         let record_len = align_up(HEADER_SIZE + payload.len(), RECORD_ALIGN);
-        if record_len > SEGMENT_SIZE {
+        if record_len > SEGMENT_SIZE - SEG_DATA_OFFSET {
             return Err(Error::PayloadTooLarge);
         }
 
@@ -462,3 +462,31 @@ fn proc_start_time(_pid: u32) -> Result<u64> {
 }
 
 use std::os::unix::io::AsRawFd;
+
+#[cfg(test)]
+mod tests {
+    use super::Queue;
+    use crate::header::HEADER_SIZE;
+    use crate::segment::{SEG_DATA_OFFSET, SEGMENT_SIZE};
+    use crate::Error;
+    use tempfile::tempdir;
+
+    #[test]
+    fn payload_size_accounts_for_segment_header() {
+        let dir = tempdir().expect("tempdir");
+        let mut writer = Queue::open_publisher(dir.path()).expect("open publisher");
+        let max_record_len = SEGMENT_SIZE - SEG_DATA_OFFSET;
+        let max_payload_len = max_record_len - HEADER_SIZE;
+        let payload = vec![0u8; max_payload_len];
+
+        writer
+            .append_with_timestamp(1, &payload, 0)
+            .expect("append max payload");
+
+        let oversized = vec![0u8; max_payload_len + 1];
+        let err = writer
+            .append_with_timestamp(1, &oversized, 0)
+            .expect_err("oversized payload should fail");
+        assert!(matches!(err, Error::PayloadTooLarge));
+    }
+}
