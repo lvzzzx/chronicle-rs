@@ -417,6 +417,19 @@ Dead/stale readers (beyond TTL) are ignored for retention. This prevents indefin
 
 On clean shutdown, readers should delete their own meta file to avoid clutter. TTL remains necessary for crash safety.
 
+9.5 Archival Sidecar (Long-Term Retention)
+
+For compliance or backtesting, data often needs to be kept longer than the NVMe capacity allows. We use a **Tiered Storage** approach via an "Archival Strategy".
+
+**Architecture:**
+*   **Archiver Process:** A standard `QueueReader` that subscribes to critical feeds.
+*   **Compression:** It reads raw segments, compresses them (e.g., `zstd`, `LZ4`), and writes them to a cheaper storage tier (HDD / S3 / NAS).
+*   **Retention Interaction:** The NVMe retention policy treats the Archiver like any other reader. Once the Archiver has committed (and safely stored the data elsewhere), the raw NVMe segments are eligible for deletion.
+
+**Benefit:**
+*   **Zero Latency Impact:** The critical path (Feed -> Strategy) is unaffected by compression CPU cost or HDD I/O latency.
+*   **Isolation:** If archiving stalls, only the cleanup is delayed; trading continues at full speed.
+
 ⸻
 
 10. Durability Semantics (Normative)
@@ -581,6 +594,39 @@ Implementation notes:
 
 12. Multi-Process HFT Topology (Single Host)
 
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    Market Data Layer                         │
+├─────────────────────────────────────────────────────────────┤
+│  Binance Feed Process          Coinbase Feed Process         │
+│  ├─ WS: 100 symbols           ├─ WS: 80 symbols             │
+│  └─ Writes to:                └─ Writes to:                 │
+│     binance_spot/queue/          coinbase_pro/queue/        │
+└─────────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Strategy Layer                            │
+├─────────────────────────────────────────────────────────────┤
+│  Strategy A (Arb)              Strategy B (Market Making)    │
+│  ├─ Reads: binance_spot       ├─ Reads: binance_spot        │
+│  ├─ Filters: BTC,ETH,SOL      ├─ Filters: BTC,ETH           │
+│  └─ Writes to:                └─ Writes to:                 │
+│     orders/strategy_A/           orders/strategy_B/         │
+└─────────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Router Layer                              │
+├─────────────────────────────────────────────────────────────┤
+│  Router Process                                              │
+│  ├─ Discovery: Finds strategy_A, strategy_B queues          │
+│  ├─ Reads: orders/strategy_*/queue/                         │
+│  ├─ Aggregates & routes to exchange                         │
+│  └─ Writes fills back to: orders/strategy_*/acks/          │
+└─────────────────────────────────────────────────────────────┘
+```
+
 12.1 Market feed → strategies (broadcast)
 	•	Feed process: single writer to per-feed queue(s)
 	•	Strategies: many readers with independent offsets
@@ -592,6 +638,68 @@ Implementation notes:
 12.3 Router → strategies (ack/fill/control)
 	•	Router writes to each strategy’s orders_in
 	•	Each strategy reads its own orders_in
+
+12.4 Market Data Subscription Models (Broadcast Guidance)
+
+For high-symbol-count feeds (e.g., Crypto with 100-500 symbols), the following model is recommended:
+
+**Model A: Single Queue, Client-Side Filtering**
+
+The feed process writes all configured symbols to a single queue. Strategies read the entire stream and filter by `symbol_id` (or similar field in the payload) on the fly.
+
+*   **Pros:**
+    *   **Stateless Feed:** The feed process doesn't need to know which strategy wants which symbol.
+    *   **Write Latency:** Optimal sequential writes to a single set of memory-mapped segments.
+    *   **Deterministic Replay:** All strategies observe the exact same sequence of market events across all symbols, preserving global temporal order.
+*   **Cons:**
+    *   **Read Overhead:** Strategies ingest messages they might eventually skip. However, with `mmap` and 64-byte headers, skipping a message is typically a ~1µs operation (pointer increment after a cache-friendly header check).
+
+**Guidance:** Use Model A for most Crypto and Equity use cases where symbol counts are in the hundreds. Per-symbol queues should only be considered if symbol counts reach thousands or if hardware-level isolation is strictly required.
+
+12.5 Snapshot + Replay Pattern (Late Joiners)
+
+To handle L2 Orderbook initialization without blocking the main feed, use the **Periodic Snapshot** pattern.
+
+**Architecture:**
+*   **Hot Path (`queue/`):** Feed writes incremental updates (Diffs). This path never pauses.
+*   **Cold Path (`snapshots/`):** Feed periodically serializes full book state to a separate directory (e.g., every 10s or 10k messages).
+
+**Workflow:**
+1.  **Feed Process:** Writes updates to `queue/`. Background thread writes `snapshots/snapshot_<seq>.bin`.
+2.  **Strategy (Late Joiner):**
+    *   Finds latest snapshot (e.g., `snapshot_2000.bin`).
+    *   Loads full book state (Seq 2000).
+    *   Opens `queue/` and seeks to Seq 2001.
+    *   Replays updates from Seq 2001 to Head.
+
+This ensures the critical path (Feed writing updates) is decoupled from heavy state serialization and strategy restarts.
+
+12.6 Discovery Mechanisms
+
+The system employs a hybrid discovery model: **Static** for critical infrastructure, **Dynamic** for strategy scaling.
+
+*   **Market Feeds (Upstream): Static Configuration.**
+    *   Since Market Data defines the "world view," it is strictly defined in configuration (e.g., `router.toml`).
+    *   The Router expects specific queues (e.g., `binance_spot`) to exist on startup and will fail-fast if they are missing.
+*   **Strategies (Downstream): Dynamic Discovery.**
+    *   The Router uses a **"Scan + Watch"** mechanism on the `orders/` directory to automatically route orders from new strategies.
+    *   **Mechanism:** `readdir` on startup + `inotify` (Linux) or `kqueue` (macOS) for runtime events.
+    *   **Robustness:** Relies on the filesystem as the source of truth. Strategies are only discovered when their `READY` marker is atomically visible.
+
+12.7 Process Architecture & Management
+
+The system is strictly **Multi-Process**. Each component (Feed, Strategy, Router) runs in its own OS process to ensure performance isolation and crash resilience. IPC is handled exclusively via `chronicle-core` queues (shared memory).
+
+**Process Management:**
+Since `chronicle-rs` does not handle supervision (Section 1 "Non-goals"), external tools must be used.
+
+*   **Production:** `systemd` (Recommended).
+    *   Use unit files (e.g., `hft-feed.service`) for robust start/stop/restart policies and logging (`journalctl`).
+    *   Dependencies can be managed via `Requires=` (e.g., ensure bus directory exists).
+*   **Development:** `tmux`, `overmind` (Procfile), or shell scripts.
+    *   Focus on visibility and easy termination (`Ctrl+C`).
+
+**Do not** build process supervision or orchestration logic into the Rust binaries.
 
 ⸻
 
@@ -623,7 +731,27 @@ chronicle-rs/
 
 ⸻
 
-14. Testing Requirements (MVP)
+14. Tooling / CLI (chronicle-cli)
+
+To manage and inspect the bus state (which `systemd` cannot see), a dedicated CLI tool is required. This tool interacts directly with the on-disk structures.
+
+**Key Commands:**
+*   `chron-cli inspect <queue_path>`:
+    *   Displays writer position (current segment/offset).
+    *   Lists all registered readers and their lag (bytes/segments behind).
+    *   Checks process liveness (PID/lock validation).
+*   `chron-cli tail <queue_path> [-f]`:
+    *   Prints message headers (seq, timestamp, type) and hexdumps payloads.
+    *   Essential for debugging data flow verification.
+*   `chron-cli doctor <bus_root>`:
+    *   Identifies stale lock files from crashed processes.
+    *   Reports on retention candidates (segments eligible for deletion).
+*   `chron-cli bench`:
+    *   Runs a throughput/latency test on the local filesystem to verify `mmap` performance.
+
+⸻
+
+15. Testing Requirements (MVP)
 	•	Memory model invariants:
 	•	Reader never reads payload without observing commit (debug assertions)
 	•	Crash recovery:
