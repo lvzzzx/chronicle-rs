@@ -75,6 +75,8 @@ Each reader has its own committed position persisted to /readers/<name>.meta. Re
 	•	RECORD_ALIGN = 64 (default)
 	•	Record layout: [MessageHeader][payload bytes][padding]
 	•	record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN)
+	•	MAX_PAYLOAD_LEN = u32::MAX - 1 (commit_len encodes payload_len + 1)
+	•	Zero-length payloads are valid and must be supported by codecs (payload_len = 0).
 
 All record headers begin on a RECORD_ALIGN boundary.
 
@@ -86,7 +88,7 @@ use core::sync::atomic::AtomicU32;
 struct MessageHeader {
     /// Commit word:
     /// 0 = uncommitted
-    /// >0 = committed payload length in bytes
+    /// >0 = committed payload length + 1 (allows zero-length payloads)
     commit_len: AtomicU32,
 
     seq: u64,
@@ -106,22 +108,34 @@ Writer sequence:
 	1.	Reserve space: pos = write_offset.fetch_add(record_len, AcqRel)
 	2.	Write header fields (except commit_len, which remains 0)
 	3.	Write payload bytes
-	4.	Publish commit: commit_len.store(payload_len, Release)
+	4.	Publish commit: commit_len.store(payload_len + 1, Release)
 	5.	Notify waiters (Section 5)
 
 Reader sequence:
 	1.	Load commit: n = commit_len.load(Acquire)
 	2.	If n == 0, the record at this offset is not committed → wait/backoff
-	3.	If n > 0, read exactly n bytes of payload
-	4.	Advance offset by align_up(HEADER_SIZE + n, RECORD_ALIGN)
+	3.	If n > 0, payload_len = n - 1; read exactly payload_len bytes of payload
+	4.	Advance offset by align_up(HEADER_SIZE + payload_len, RECORD_ALIGN)
+
+Append validation (normative):
+	•	If payload_len > MAX_PAYLOAD_LEN, append() returns Err(PayloadTooLarge).
+	•	If record_len exceeds remaining space in the current segment and a roll is required but cannot succeed, append() returns an error from the roll step.
 
 4.4 Memory ordering guarantee (explicit)
 
 The following is guaranteed:
-	•	The writer’s commit_len.store(payload_len, Release) synchronizes-with a reader’s commit_len.load(Acquire) that observes payload_len.
+	•	The writer’s commit_len.store(payload_len + 1, Release) synchronizes-with a reader’s commit_len.load(Acquire) that observes n > 0.
 	•	Therefore, all prior writes by the writer for that record (header fields and payload bytes) happen-before the reader’s subsequent reads of the payload.
 
 Rule: Readers must never read payload bytes unless they have first observed commit_len > 0 via an Acquire load. This rule is part of the API contract.
+
+4.5 Correctness invariants (normative)
+	•	A record is committed iff commit_len.load(Acquire) > 0; payload_len = commit_len - 1.
+	•	Readers must not read payload bytes unless they have observed commit_len > 0 with Acquire.
+	•	Writer uses a single-writer append discipline; no two writers share a queue directory.
+	•	Record boundaries are 64-byte aligned and computed from payload_len; readers must advance using align_up.
+	•	Segment transitions are driven by boundary + SEALED checks; control.current_segment is a hint, not a correctness signal.
+	•	Retention ignores dead readers (TTL exceeded); readers must heartbeat even when idle to remain live.
 
 ⸻
 
@@ -147,7 +161,7 @@ struct ControlBlock {
     init_state: AtomicU32,  // 0=uninit, 1=initializing, 2=ready
 
     current_segment: AtomicU32,
-    write_offset: AtomicU64,   // writer position within current segment (monotonic)
+    write_offset: AtomicU64,   // writer position within current segment (resets on roll)
 
     notify_seq: AtomicU32,     // futex wait/wake target (queue-level)
     writer_epoch: AtomicU64,   // increments on writer restart (optional)
@@ -186,12 +200,15 @@ Scalability statement:
 	•	Broadcast queues (market data) typically have many readers; waking them is expected.
 	•	Fan-in queues are typically SPSC (router is sole reader per strategy queue), so no herd.
 	•	For MVP, queue-level wake is acceptable; per-reader notification can be added later if needed.
+	•	Eventfd can be layered on top (e.g., for epoll integration), but futex is the core MVP primitive.
 
 ⸻
 
 6. Persistence Layout and Writer Exclusivity
 
 6.1 Directory structure (single host)
+
+/var/lib/hft_bus is an example root; the path must be configurable.
 
 /var/lib/hft_bus/
 └── orders/
@@ -210,17 +227,23 @@ Scalability statement:
 
 6.2 writer.lock semantics (non-optional PID staleness check)
 
-The writer holds an advisory lock on writer.lock. The file stores {pid, start_time_ns, writer_epoch} for diagnostics.
+The writer holds an advisory lock on writer.lock. The file stores {pid, start_time_ticks, writer_epoch} for diagnostics, where start_time_ticks is the /proc/<pid>/stat starttime field (clock ticks since boot) captured when the lock is acquired.
 
 On open_publisher():
 	•	Attempt to acquire lock.
 	•	If lock cannot be acquired:
-	•	Read pid from lock file.
+	•	Read pid and start_time_ticks from lock file.
 	•	Verify process existence via /proc/<pid> (Linux-only and mandatory for MVP).
-	•	If /proc/<pid> does not exist, treat as stale and retry lock acquisition.
+	•	If /proc/<pid> exists, compare start_time_ticks against /proc/<pid>/stat starttime to avoid PID reuse.
+	•	If /proc/<pid> does not exist or start_time mismatch, treat as stale and retry lock acquisition.
 	•	Otherwise, return Err(WriterAlreadyActive).
 
-File locks release automatically on process exit/crash; the PID check avoids false failures due to stale metadata or PID recycling edge cases.
+Parsing note (Linux):
+	•	/proc/<pid>/stat format contains comm in parentheses; fields after it are space-separated.
+	•	starttime is the 22nd field in the full stat record (counting from pid as field 1).
+	•	To parse reliably, read the line, find the last ')' (end of comm), then split the remainder by spaces.
+
+File locks release automatically on process exit/crash; the PID+starttime check avoids false failures due to stale metadata or PID recycling edge cases.
 
 ⸻
 
@@ -288,8 +311,9 @@ loop:
   n = hdr.commit_len.load(Acquire)
 
   if n > 0:
-      consume payload[0..n]
-      offset += align_up(HEADER_SIZE + n, RECORD_ALIGN)
+      payload_len = n - 1
+      consume payload[0..payload_len]
+      offset += align_up(HEADER_SIZE + payload_len, RECORD_ALIGN)
       continue
 
   // n == 0: no committed message here yet
@@ -314,6 +338,7 @@ If accepting a new record would exceed the cap, append() returns Err(QueueFull) 
 
 Operational guidance:
 	•	Applications must monitor QueueFull and treat it as a circuit-breaker condition (alert, shed load, drop non-critical messages, etc.).
+	•	QueueFull persists until readers advance and retention frees segments; retry/backoff policy is an application decision.
 
 8.2 Disk full behavior
 
@@ -339,6 +364,8 @@ Meta updates must be atomic and corruption-detecting (recommended double-slot wi
 
 A reader is live if:
 	•	now_ns - last_heartbeat_ns <= READER_TTL_NS
+
+Readers must heartbeat even when idle; otherwise they will be treated as dead and ignored for retention.
 
 Defaults are workload dependent:
 	•	market data: TTL ~ 10s
@@ -371,6 +398,7 @@ Durability tiers are explicit:
 	•	calls msync(MS_SYNC) on recent ranges
 	•	aims for on-disk persistence of data pages
 	•	metadata persistence may additionally require fdatasync() at roll/checkpoint boundaries
+	•	segment roll must persist both the sealed segment header and control/meta state before reporting durability
 
 Operational guidance:
 	•	msync(MS_SYNC) can be millisecond-scale; batch flushes (e.g., every 100–1000 messages or every 10–50ms) rather than flushing every message.
@@ -390,6 +418,15 @@ pub struct QueueReader;
 pub enum WaitStrategy {
     Hybrid { spin_us: u32 },         // spin then futex
     BusyPoll(std::time::Duration),   // no futex
+}
+
+pub enum QueueError {
+    PayloadTooLarge,
+    QueueFull,
+    WriterAlreadyActive,
+    UnsupportedVersion,
+    CorruptMetadata,
+    Io(std::io::Error),
 }
 
 Core operations:
@@ -417,6 +454,15 @@ impl QueueReader {
     pub fn commit(&mut self) -> Result<()>;
     pub fn wait(&self, timeout: Option<std::time::Duration>) -> Result<()>;
 }
+
+11.3 Error semantics (architecture contract)
+	•	PayloadTooLarge: payload_len > MAX_PAYLOAD_LEN; no partial write occurs.
+	•	QueueFull: configured capacity would be exceeded; no partial write occurs.
+	•	WriterAlreadyActive: writer.lock is held by a live writer (PID + start_time_ticks check).
+	•	UnsupportedVersion: control/segment format version mismatch.
+	•	CorruptMetadata: failed CRC or invalid meta structure; recovery may be required.
+	•	Io: underlying OS or filesystem error (open/mmap/fallocate/msync/fdatasync).
+	•	Errors are fail-fast; callers decide retry/backoff/drop policy.
 
 11.2 chronicle-bus API (control plane helper; intentionally thin)
 
@@ -494,6 +540,7 @@ Implementation notes:
 	•	Use a filesystem watcher library plus an initial scan.
 	•	Deduplicate scan results vs watch events.
 	•	On removal, callers must drop associated QueueReader to release mmaps/FDs.
+	•	Discovery is best-effort; missed events are recovered by periodic rescan.
 
 ⸻
 
@@ -554,5 +601,3 @@ chronicle-rs/
 	•	stale reader meta does not block cleanup after TTL
 	•	Disk full:
 	•	fallocate() failure surfaces promptly and predictably
-
-
