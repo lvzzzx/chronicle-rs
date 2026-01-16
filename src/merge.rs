@@ -1,16 +1,24 @@
-use crate::header::MessageHeader;
-use crate::reader::{QueueMessage, QueueReader};
+use crate::reader::{MessageView, QueueReader};
 use crate::{Error, Result};
 
 pub struct MergedMessage {
     pub source: usize,
-    pub header: MessageHeader,
+    pub seq: u64,
+    pub timestamp_ns: u64,
+    pub type_id: u16,
     pub payload: Vec<u8>,
 }
 
 pub struct FanInReader {
     readers: Vec<QueueReader>,
-    pending: Vec<Option<QueueMessage>>,
+    pending: Vec<Option<PendingMessage>>,
+}
+
+struct PendingMessage {
+    seq: u64,
+    timestamp_ns: u64,
+    type_id: u16,
+    payload: Vec<u8>,
 }
 
 impl FanInReader {
@@ -22,7 +30,9 @@ impl FanInReader {
     pub fn next(&mut self) -> Result<Option<MergedMessage>> {
         for (index, reader) in self.readers.iter_mut().enumerate() {
             if self.pending[index].is_none() {
-                self.pending[index] = reader.next_message()?;
+                if let Some(view) = reader.next()? {
+                    self.pending[index] = Some(PendingMessage::from_view(view));
+                }
             }
         }
 
@@ -31,7 +41,7 @@ impl FanInReader {
             let Some(message) = pending.as_ref() else {
                 continue;
             };
-            let timestamp = message.header.timestamp_ns;
+            let timestamp = message.timestamp_ns;
             match best {
                 None => best = Some((index, timestamp)),
                 Some((best_index, best_timestamp)) => {
@@ -52,16 +62,29 @@ impl FanInReader {
             .ok_or(Error::Corrupt("pending message missing"))?;
         Ok(Some(MergedMessage {
             source,
-            header: message.header,
+            seq: message.seq,
+            timestamp_ns: message.timestamp_ns,
+            type_id: message.type_id,
             payload: message.payload,
         }))
     }
 
-    pub fn commit(&self, source: usize) -> Result<()> {
+    pub fn commit(&mut self, source: usize) -> Result<()> {
         let reader = self
             .readers
-            .get(source)
+            .get_mut(source)
             .ok_or(Error::Unsupported("invalid fan-in source"))?;
         reader.commit()
+    }
+}
+
+impl PendingMessage {
+    fn from_view(view: MessageView<'_>) -> Self {
+        Self {
+            seq: view.seq,
+            timestamp_ns: view.timestamp_ns,
+            type_id: view.type_id,
+            payload: view.payload.to_vec(),
+        }
     }
 }

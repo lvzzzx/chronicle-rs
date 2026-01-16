@@ -9,9 +9,8 @@ use std::time::Duration;
 #[test]
 fn reader_wait_wakes_on_append() -> chronicle::Result<()> {
     let dir = tempfile::tempdir()?;
-    let queue = Queue::open(dir.path())?;
-    let mut reader = queue.reader("reader_a")?;
-    let writer = queue.writer();
+    let mut writer = Queue::open_publisher(dir.path())?;
+    let mut reader = Queue::open_subscriber(dir.path(), "reader_a")?;
 
     assert!(reader.next()?.is_none());
 
@@ -20,7 +19,7 @@ fn reader_wait_wakes_on_append() -> chronicle::Result<()> {
 
     let handle = std::thread::spawn(move || -> chronicle::Result<()> {
         let _ = started_tx.send(());
-        reader.wait()?;
+        reader.wait(Some(Duration::from_secs(1)))?;
         let _ = done_tx.send(());
         Ok(())
     });
@@ -28,7 +27,7 @@ fn reader_wait_wakes_on_append() -> chronicle::Result<()> {
     started_rx.recv().unwrap();
     assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
 
-    writer.append(b"ping")?;
+    writer.append(1, b"ping")?;
     done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     handle.join().unwrap()?;
 

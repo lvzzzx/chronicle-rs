@@ -5,14 +5,15 @@
 
 pub mod error;
 pub mod header;
+pub mod control;
 pub mod mmap;
 pub mod merge;
-pub mod notifier;
 pub mod reader;
 pub mod retention;
 pub mod segment;
+pub mod wait;
 pub mod writer;
 
 pub use error::{Error, Result};
-pub use reader::QueueReader;
+pub use reader::{MessageView, QueueReader, WaitStrategy};
 pub use writer::{Queue, QueueWriter};

@@ -61,4 +61,14 @@ impl MmapFile {
         self.file.sync_all()?;
         Ok(())
     }
+
+    pub fn flush_async(&self) -> Result<()> {
+        self.map.flush_async()?;
+        Ok(())
+    }
+
+    pub fn flush_sync(&self) -> Result<()> {
+        self.map.flush()?;
+        Ok(())
+    }
 }

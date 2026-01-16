@@ -4,7 +4,12 @@ use std::fmt;
 pub enum Error {
     Io(std::io::Error),
     Corrupt(&'static str),
+    CorruptMetadata(&'static str),
     Unsupported(&'static str),
+    UnsupportedVersion(u32),
+    PayloadTooLarge,
+    QueueFull,
+    WriterAlreadyActive,
 }
 
 impl fmt::Display for Error {
@@ -12,7 +17,12 @@ impl fmt::Display for Error {
         match self {
             Error::Io(err) => write!(f, "io error: {err}"),
             Error::Corrupt(msg) => write!(f, "corrupt data: {msg}"),
+            Error::CorruptMetadata(msg) => write!(f, "corrupt metadata: {msg}"),
             Error::Unsupported(msg) => write!(f, "unsupported: {msg}"),
+            Error::UnsupportedVersion(version) => write!(f, "unsupported version: {version}"),
+            Error::PayloadTooLarge => write!(f, "payload too large"),
+            Error::QueueFull => write!(f, "queue full"),
+            Error::WriterAlreadyActive => write!(f, "writer already active"),
         }
     }
 }

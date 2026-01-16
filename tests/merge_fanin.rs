@@ -8,37 +8,30 @@ fn merge_orders_by_timestamp_and_source() {
     let queue_a_path = dir.path().join("queue_a");
     let queue_b_path = dir.path().join("queue_b");
 
-    let queue_a = Queue::open(&queue_a_path).expect("queue a");
-    let queue_b = Queue::open(&queue_b_path).expect("queue b");
-
-    let writer_a = queue_a.writer();
-    let writer_b = queue_b.writer();
+    let mut writer_a = Queue::open_publisher(&queue_a_path).expect("queue a");
+    let mut writer_b = Queue::open_publisher(&queue_b_path).expect("queue b");
 
     writer_a
-        .append_with_timestamp(b"a1", 100)
+        .append_with_timestamp(1, b"a1", 100)
         .expect("append a1");
     writer_b
-        .append_with_timestamp(b"b1", 200)
+        .append_with_timestamp(1, b"b1", 200)
         .expect("append b1");
     writer_a
-        .append_with_timestamp(b"a2", 300)
+        .append_with_timestamp(1, b"a2", 300)
         .expect("append a2");
     writer_b
-        .append_with_timestamp(b"b2", 300)
+        .append_with_timestamp(1, b"b2", 300)
         .expect("append b2");
 
-    let reader_a = queue_a.reader("fanin").expect("reader a");
-    let reader_b = queue_b.reader("fanin").expect("reader b");
+    let reader_a = Queue::open_subscriber(&queue_a_path, "fanin").expect("reader a");
+    let reader_b = Queue::open_subscriber(&queue_b_path, "fanin").expect("reader b");
 
     let mut fanin = FanInReader::new(vec![reader_a, reader_b]);
     let mut seen = Vec::new();
 
     while let Some(message) = fanin.next().expect("fanin next") {
-        seen.push((
-            message.source,
-            message.header.timestamp_ns,
-            message.payload,
-        ));
+        seen.push((message.source, message.timestamp_ns, message.payload));
     }
 
     assert_eq!(
@@ -58,11 +51,14 @@ fn merge_returns_none_when_empty() {
     let queue_a_path = dir.path().join("queue_a");
     let queue_b_path = dir.path().join("queue_b");
 
-    let queue_a = Queue::open(&queue_a_path).expect("queue a");
-    let queue_b = Queue::open(&queue_b_path).expect("queue b");
+    let reader_a = Queue::open_subscriber(&queue_a_path, "fanin");
+    assert!(reader_a.is_err());
 
-    let reader_a = queue_a.reader("fanin").expect("reader a");
-    let reader_b = queue_b.reader("fanin").expect("reader b");
+    let _writer_a = Queue::open_publisher(&queue_a_path).expect("writer a");
+    let _writer_b = Queue::open_publisher(&queue_b_path).expect("writer b");
+
+    let reader_a = Queue::open_subscriber(&queue_a_path, "fanin").expect("reader a");
+    let reader_b = Queue::open_subscriber(&queue_b_path, "fanin").expect("reader b");
 
     let mut fanin = FanInReader::new(vec![reader_a, reader_b]);
     let message = fanin.next().expect("fanin next");
