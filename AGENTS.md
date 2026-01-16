@@ -40,7 +40,11 @@ Use `NOTES.md` as a lightweight, durable knowledge cache for:
 - Codebase gotchas or footguns that are easy to forget.
 - Known issues or dead ends to avoid re-suggesting.
 
-Do not duplicate planning or progress logs from `PLANS.md`. After completing work, only update `NOTES.md` if new domain knowledge or gotchas were discovered.
+Operational guidance:
+- At the start of any non-trivial task, read `NOTES.md`.
+- Before proposing a design or fix, check `NOTES.md` for known pitfalls and ruled-out approaches.
+- Only update `NOTES.md` when a durable, reusable fact is discovered (domain invariant, codebase gotcha, or known issue).
+- Do not duplicate planning or progress logs from `PLANS.md` or ExecPlans.
 
 # ExecPlans
 
