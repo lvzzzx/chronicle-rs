@@ -107,12 +107,20 @@ Reserved type_id values (architecture):
 
 4.3 Publish/consume protocol (required discipline)
 
-Writer sequence:
+Writer sequence (Zero-Syscall "Memcpy" Path):
 	1.	Reserve space: pos = write_offset.fetch_add(record_len, AcqRel)
 	2.	Write header fields (except commit_len, which remains 0)
-	3.	Write payload bytes
+	3.	Write payload bytes (memcpy from stack/buffer to mmap region)
 	4.	Publish commit: commit_len.store(payload_len + 1, Release)
 	5.	Notify waiters (Section 5)
+
+Writer sequence (Zero-Copy "In-Place" Path):
+	*Optimization:* Instead of `memcpy`, the writer constructs the payload directly into the reserved mmap region.
+	1.	Reserve space: pos = write_offset.fetch_add(record_len, AcqRel)
+	2.	Obtain mutable pointer to payload area: `ptr = segment_base + pos + HEADER_SIZE`
+	3.	Construct object in-place: `*ptr = Order { ... }`
+	4.	Write header fields.
+	5.	Publish commit.
 
 Reader sequence:
 	1.	Load commit: n = commit_len.load(Acquire)
@@ -140,6 +148,17 @@ Rule: Readers must never read payload bytes unless they have first observed comm
 	•	Records with type_id = 0xFFFF (PAD) are internal and must be skipped by readers.
 	•	Segment transitions are driven by boundary + SEALED checks; control.current_segment is a hint, not a correctness signal.
 	•	Retention ignores dead readers (TTL exceeded); readers must heartbeat even when idle to remain live.
+
+4.6 Message serialization policy (Hot path)
+
+To maintain microsecond-level latency, the hot path (Market Data and Orders) avoids expensive serialization (JSON, Protobuf, Bincode).
+
+*   **Zero-Copy POD:** Messages should be defined as `#[repr(C)]` or `#[repr(C, packed)]` structs.
+*   **Direct Casting:** Writers cast the struct memory directly to `&[u8]` for `append()`. Readers cast the `mmap` payload pointer back to the struct reference.
+*   **Fixed Layout:** Prefer fixed-size fields (e.g., `u64`, `f64`) over variable-length strings or vectors where possible.
+*   **No Allocation:** Payloads should be stack-allocated or pre-allocated; avoid heap allocations during the `append()` call.
+
+Cold-path operations (Configuration, Periodic Snapshots) may use standard SerDes (e.g., `serde`).
 
 ⸻
 
