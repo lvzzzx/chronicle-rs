@@ -257,9 +257,19 @@ impl QueueReader {
     }
 
     fn advance_segment(&mut self) -> Result<bool> {
+        // Optimization: Check the Control Block first.
+        // If the writer hasn't incremented current_segment, the next file likely doesn't exist yet.
+        // This avoids a `stat` syscall loop while waiting for a rollover.
+        if self.control.current_segment() <= self.segment_id {
+            return Ok(false);
+        }
+
         let header = read_segment_header(&self.mmap)?;
         let next_segment = self.segment_id + 1;
         let next_path = segment_path(&self.path, next_segment as u64);
+        
+        // We still check exists() or try_open because current_segment is a "hint" (Relaxed).
+        // However, we only pay this cost if the hint suggests we should.
         if !next_path.exists() {
             return Ok(false);
         }

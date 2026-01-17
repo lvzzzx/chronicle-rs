@@ -78,6 +78,55 @@ loop {
 }
 ```
 
+## Async Cleanup (Retention) Pattern
+
+To avoid filesystem latency spikes (metadata scans, file deletion) on the Hot Path, strict ULL systems must **disable** built-in limits in the Writer and offload retention to a background thread.
+
+### The Problem
+If `WriterConfig` has `max_bytes` or `max_segments` set, `append()` performs periodic directory scans (`fs::read_dir`) to check usage. This introduces non-deterministic latency spikes (jitter) every ~10ms.
+
+### The Solution
+
+1.  **Hot Thread:** Configure `QueueWriter` with **no limits**.
+    ```rust
+    let config = WriterConfig {
+        max_bytes: None,    // Disable inline checks
+        max_segments: None, // Disable inline checks
+        ..Default::default()
+    };
+    let mut writer = Queue::open_publisher_with_config(&path, config)?;
+    ```
+
+2.  **Sidecar Thread:** Run a cleanup loop.
+    ```rust
+    use chronicle_core::retention::cleanup_segments;
+    
+    // In Sidecar Thread
+    thread::spawn(move || {
+        loop {
+            // "Soft Cap" logic: Keep last 100 segments (~10GB)
+            // This scans disk and deletes files WITHOUT blocking the writer.
+            // Note: Use a separate handle or raw retention function to avoid lock contention if applicable.
+            // Here we use the raw utility function which is safe to run concurrently.
+            
+            // Get current head from shared state or by inspecting the directory (less precise but safe)
+            // Ideally, the Hot Thread publishes its 'current_segment' to an atomic for the Sidecar to read.
+            let head_segment = shared_control.current_segment.load(Ordering::Relaxed) as u64;
+            let head_offset = shared_control.write_offset.load(Ordering::Relaxed);
+            let segment_size = shared_control.segment_size.load(Ordering::Relaxed);
+
+            let _ = cleanup_segments(
+                &queue_path, 
+                head_segment, 
+                head_offset, 
+                segment_size
+            );
+            
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+    ```
+
 ### Applicability
 
 *   **Strategies:** Use Sidecar to discover dynamic Order Entry gateways or listen for risk parameter updates.
