@@ -33,6 +33,11 @@ impl FanInReader {
         }
     }
 
+    pub fn add_reader(&mut self, reader: QueueReader) {
+        self.readers.push(reader);
+        self.pending.push(None);
+    }
+
     pub fn set_wait_strategy(&mut self, strategy: WaitStrategy) {
         self.wait_strategy = strategy;
     }

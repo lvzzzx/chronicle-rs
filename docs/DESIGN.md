@@ -738,6 +738,16 @@ Since `chronicle-rs` does not handle supervision (Section 1 "Non-goals"), extern
 
 **Do not** build process supervision or orchestration logic into the Rust binaries.
 
+12.8 Threading Model (Sidecar Pattern)
+
+To maintain deterministic latency, applications must separate the Data Plane (Hot Path) from the Control Plane (Cold Path).
+
+*   **Hot Thread (Pinned):** Performs no system calls (no `open`, `stat`, or `malloc`). Owns the `FanInReader` and `QueueWriter`.
+*   **Sidecar Thread (Background):** Handles file discovery, logging, and heavy initialization.
+*   **Handoff:** The Sidecar opens new queues and passes fully initialized `QueueReader` objects to the Hot Thread via a lock-free SPSC queue.
+
+See **[DESIGN-patterns.md](./DESIGN-patterns.md)** for implementation details.
+
 ⸻
 
 13. Workspace / Modules

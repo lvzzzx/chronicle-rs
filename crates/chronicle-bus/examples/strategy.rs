@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chronicle_bus::{BusLayout, StrategyId};
+use chronicle_core::merge::FanInReader;
 use chronicle_core::{Error, Queue, QueueReader};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,7 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("demo_feed");
 
     let reader_name = format!("reader_{}", strategy_id.0);
-    let mut feed_reader = open_subscriber_retry(&feed_path, &reader_name)?;
+    let feed_reader = open_subscriber_retry(&feed_path, &reader_name)?;
+
+    // Use FanInReader to listen to both Feed (source 0) and OrdersIn (source 1, eventually)
+    let mut fanin = FanInReader::new(vec![feed_reader]);
+    let mut orders_in_connected = false;
 
     let mut orders_out_writer = Queue::open_publisher(&endpoints.orders_out)?;
     layout.mark_ready(&endpoints.orders_out)?;
@@ -41,27 +46,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         endpoints.orders_out.display()
     );
 
-    let mut orders_in_reader: Option<QueueReader> = None;
     let mut order_seq: u64 = 0;
 
     loop {
-        feed_reader.wait(Some(Duration::from_millis(100)))?;
-        while let Some(msg) = feed_reader.next()? {
-            let text = std::str::from_utf8(msg.payload).unwrap_or("");
-            if payload_symbol_matches(text, &options.symbol) {
-                let order_id = order_seq;
-                let payload = format!(
-                    "order_id={order_id} symbol={} qty=1 side=BUY",
-                    options.symbol
-                );
-                orders_out_writer.append(2, payload.as_bytes())?;
-                println!("strategy {}: order {payload}", strategy_id.0);
-                order_seq = order_seq.wrapping_add(1);
+        // Now wait() works for ALL connected sources (Smart Yield strategy)
+        fanin.wait()?;
+        
+        while let Some(msg) = fanin.next()? {
+            let text = std::str::from_utf8(&msg.payload).unwrap_or("");
+            
+            match msg.source {
+                0 => { // Market Data Feed
+                    if payload_symbol_matches(text, &options.symbol) {
+                        let order_id = order_seq;
+                        let payload = format!(
+                            "order_id={order_id} symbol={} qty=1 side=BUY",
+                            options.symbol
+                        );
+                        orders_out_writer.append(2, payload.as_bytes())?;
+                        println!("strategy {}: order {payload}", strategy_id.0);
+                        order_seq = order_seq.wrapping_add(1);
+                    }
+                }
+                1 => { // Order Acks (once connected)
+                     println!("strategy {}: ack {text}", strategy_id.0);
+                }
+                _ => {}
             }
-            feed_reader.commit()?;
+            fanin.commit(msg.source)?;
         }
 
-        if orders_in_reader.is_none() {
+        // Discovery logic for Orders In channel
+        if !orders_in_connected {
             match Queue::open_subscriber(&endpoints.orders_in, &reader_name) {
                 Ok(reader) => {
                     println!(
@@ -69,20 +85,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         strategy_id.0,
                         endpoints.orders_in.display()
                     );
-                    orders_in_reader = Some(reader);
+                    fanin.add_reader(reader);
+                    orders_in_connected = true;
                 }
                 Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-                    std::thread::sleep(Duration::from_millis(100));
+                    // Just ignore, we will retry next loop iteration.
+                    // Since wait() yields/sleeps, we won't busy-loop too hard.
                 }
                 Err(err) => return Err(Box::new(err)),
-            }
-        }
-
-        if let Some(reader) = orders_in_reader.as_mut() {
-            while let Some(msg) = reader.next()? {
-                let text = std::str::from_utf8(msg.payload).unwrap_or("");
-                println!("strategy {}: ack {text}", strategy_id.0);
-                reader.commit()?;
             }
         }
     }
