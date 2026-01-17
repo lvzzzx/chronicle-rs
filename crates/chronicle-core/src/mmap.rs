@@ -27,6 +27,20 @@ impl MmapFile {
         Ok(Self { file, map, len })
     }
 
+    pub fn create_new(path: &Path, len: usize) -> Result<Self> {
+        if len == 0 {
+            return Err(Error::Unsupported("mmap length must be non-zero"));
+        }
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.set_len(len as u64)?;
+        let map = unsafe { MmapOptions::new().len(len).map_mut(&file)? };
+        Ok(Self { file, map, len })
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let len = file.metadata()?.len() as usize;

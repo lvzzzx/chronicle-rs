@@ -1,13 +1,16 @@
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::control::ControlFile;
 use crate::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, RECORD_ALIGN};
 use crate::mmap::MmapFile;
 use crate::segment::{
-    create_segment, load_index, open_segment, read_segment_header, seal_segment, segment_path,
+    create_segment, load_index, open_or_create_segment, open_segment, prepare_segment_temp,
+    publish_segment, read_segment_header, seal_segment, segment_path, segment_temp_path,
     store_index, validate_segment_size, DEFAULT_SEGMENT_SIZE, SegmentIndex, SEG_DATA_OFFSET,
     SEG_FLAG_SEALED,
 };
@@ -121,6 +124,11 @@ impl WriterConfig {
 
 pub struct Queue;
 
+struct PreparedSegment {
+    segment_id: u64,
+    mmap: MmapFile,
+}
+
 pub struct QueueWriter {
     path: PathBuf,
     control: ControlFile,
@@ -131,6 +139,8 @@ pub struct QueueWriter {
     config: WriterConfig,
     segment_size: usize,
     retention_cache: RetentionCache,
+    prealloc_slot: Arc<Mutex<Option<PreparedSegment>>>,
+    expected_prealloc_id: Arc<AtomicU64>,
     _lock: WriterLock,
 }
 
@@ -198,11 +208,7 @@ impl Queue {
         let header = read_segment_header(&mmap)?;
         let next_segment_id = segment_id + 1;
         let next_path = segment_path(&path, next_segment_id as u64);
-        if !tail_partial && ((header.flags & SEG_FLAG_SEALED) != 0 || next_path.exists()) {
-            if (header.flags & SEG_FLAG_SEALED) == 0 {
-                seal_segment(&mut mmap)?;
-                mmap.sync()?;
-            }
+        if !tail_partial && (header.flags & SEG_FLAG_SEALED) != 0 {
             if next_path.exists() {
                 segment_id = next_segment_id;
                 mmap = open_segment(&path, segment_id as u64, segment_size)?;
@@ -215,7 +221,9 @@ impl Queue {
 
         control.set_segment_index(segment_id, write_offset);
 
-        Ok(QueueWriter {
+        let prealloc_slot = Arc::new(Mutex::new(None));
+        let expected_prealloc_id = Arc::new(AtomicU64::new(segment_id as u64 + 1));
+        let writer = QueueWriter {
             path,
             control,
             mmap,
@@ -225,12 +233,50 @@ impl Queue {
             config,
             segment_size,
             retention_cache: RetentionCache::new(config.retention_check_interval, config.retention_check_bytes),
+            prealloc_slot,
+            expected_prealloc_id,
             _lock: lock,
-        })
+        };
+
+        writer.trigger_preallocation(segment_id as u64 + 1);
+        Ok(writer)
     }
 }
 
 impl QueueWriter {
+    fn trigger_preallocation(&self, next_segment_id: u64) {
+        self.expected_prealloc_id
+            .store(next_segment_id, Ordering::Release);
+        let root = self.path.clone();
+        let size = self.segment_size;
+        let prealloc_slot = self.prealloc_slot.clone();
+        let expected_prealloc_id = self.expected_prealloc_id.clone();
+        thread::spawn(move || {
+            let temp_path = segment_temp_path(&root, next_segment_id);
+            let mmap = match prepare_segment_temp(&root, next_segment_id, size) {
+                Ok(mmap) => mmap,
+                Err(_) => {
+                    let _ = std::fs::remove_file(&temp_path);
+                    return;
+                }
+            };
+            if expected_prealloc_id.load(Ordering::Acquire) != next_segment_id {
+                let _ = std::fs::remove_file(&temp_path);
+                return;
+            }
+            if publish_segment(&temp_path, &segment_path(&root, next_segment_id)).is_ok() {
+                if let Ok(mut slot) = prealloc_slot.lock() {
+                    *slot = Some(PreparedSegment {
+                        segment_id: next_segment_id,
+                        mmap,
+                    });
+                }
+            } else {
+                let _ = std::fs::remove_file(&temp_path);
+            }
+        });
+    }
+
     pub fn append(&mut self, type_id: u16, payload: &[u8]) -> Result<()> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -405,7 +451,26 @@ impl QueueWriter {
 
     fn roll_segment(&mut self) -> Result<()> {
         let next_segment = self.segment_id + 1;
-        create_segment(&self.path, next_segment as u64, self.segment_size)?;
+        let new_mmap = {
+            let mut slot = self
+                .prealloc_slot
+                .lock()
+                .map_err(|_| Error::Corrupt("prealloc_slot lock poisoned"))?;
+            if let Some(prepared) = slot.take() {
+                if prepared.segment_id == next_segment as u64 {
+                    let header = read_segment_header(&prepared.mmap)?;
+                    if header.segment_id != next_segment {
+                        return Err(Error::Corrupt("preallocated segment id mismatch"));
+                    }
+                    prepared.mmap
+                } else {
+                    open_or_create_segment(&self.path, next_segment as u64, self.segment_size)?
+                }
+            } else {
+                open_or_create_segment(&self.path, next_segment as u64, self.segment_size)?
+            }
+        };
+
         self.control
             .set_segment_index(next_segment, SEG_DATA_OFFSET as u64);
 
@@ -414,7 +479,7 @@ impl QueueWriter {
 
         self.segment_id = next_segment;
         self.write_offset = SEG_DATA_OFFSET as u64;
-        self.mmap = open_segment(&self.path, next_segment as u64, self.segment_size)?;
+        self.mmap = new_mmap;
         self.control.set_writer_heartbeat_ns(now_ns()?);
 
         self.control
@@ -425,6 +490,7 @@ impl QueueWriter {
         if self.control.waiters_pending().load(Ordering::Relaxed) > 0 {
             futex_wake(self.control.notify_seq())?;
         }
+        self.trigger_preallocation(next_segment as u64 + 1);
         Ok(())
     }
 }
@@ -537,8 +603,10 @@ fn repair_tail_and_roll(
 #[cfg(test)]
 mod tests {
     use super::Queue;
+    use super::PreparedSegment;
     use crate::header::HEADER_SIZE;
     use crate::segment::SEG_DATA_OFFSET;
+    use crate::segment::create_segment;
     use crate::writer::WriterConfig;
     use crate::Error;
     use tempfile::tempdir;
@@ -568,5 +636,38 @@ mod tests {
             .append_with_timestamp(1, &oversized, 0)
             .expect_err("oversized payload should fail");
         assert!(matches!(err, Error::PayloadTooLarge));
+    }
+
+    #[test]
+    fn stale_prealloc_is_ignored() {
+        let dir = tempdir().expect("tempdir");
+        let config = WriterConfig {
+            segment_size_bytes: 4096,
+            ..WriterConfig::default()
+        };
+        let mut writer = Queue::open_publisher_with_config(dir.path(), config)
+            .expect("open publisher");
+        writer
+            .expected_prealloc_id
+            .store(u64::MAX, std::sync::atomic::Ordering::Release);
+        {
+            let mut slot = writer.prealloc_slot.lock().expect("prealloc slot");
+            *slot = None;
+        }
+
+        let current = writer.segment_id as u64;
+        let stale_id = current + 2;
+        let mmap = create_segment(dir.path(), stale_id, writer.segment_size)
+            .expect("create stale segment");
+        {
+            let mut slot = writer.prealloc_slot.lock().expect("prealloc slot");
+            *slot = Some(PreparedSegment {
+                segment_id: stale_id,
+                mmap,
+            });
+        }
+
+        writer.roll_segment().expect("roll segment");
+        assert_eq!(writer.segment_id as u64, current + 1);
     }
 }

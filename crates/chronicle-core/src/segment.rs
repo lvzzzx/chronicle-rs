@@ -73,8 +73,16 @@ pub fn segment_filename(id: u64) -> String {
     format!("{:09}.q", id)
 }
 
+pub fn segment_temp_filename(id: u64) -> String {
+    format!("{:09}.q.tmp", id)
+}
+
 pub fn segment_path(root: &Path, id: u64) -> PathBuf {
     root.join(segment_filename(id))
+}
+
+pub fn segment_temp_path(root: &Path, id: u64) -> PathBuf {
+    root.join(segment_temp_filename(id))
 }
 
 pub fn open_segment(root: &Path, id: u64, segment_size: usize) -> Result<MmapFile> {
@@ -95,6 +103,98 @@ pub fn create_segment(root: &Path, id: u64, segment_size: usize) -> Result<MmapF
     let mut mmap = MmapFile::create(&path, segment_size)?;
     write_segment_header(&mut mmap, id as u32, 0)?;
     Ok(mmap)
+}
+
+pub fn open_or_create_segment(root: &Path, id: u64, segment_size: usize) -> Result<MmapFile> {
+    let path = segment_path(root, id);
+    match open_segment(root, id, segment_size) {
+        Ok(mmap) => Ok(mmap),
+        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+            match MmapFile::create_new(&path, segment_size) {
+                Ok(mut mmap) => {
+                    write_segment_header(&mut mmap, id as u32, 0)?;
+                    Ok(mmap)
+                }
+                Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    open_segment(root, id, segment_size)
+                }
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+pub fn prepare_segment(root: &Path, id: u64, segment_size: usize) -> Result<MmapFile> {
+    let mut mmap = create_segment(root, id, segment_size)?;
+    // Prefault pages by writing to them.
+    // Skip the first page because create_segment already wrote the header there.
+    let slice = mmap.as_mut_slice();
+    let len = slice.len();
+    let page_size = 4096;
+    let mut offset = page_size;
+    while offset < len {
+        // Simple write to force page allocation
+        slice[offset] = 0;
+        offset += page_size;
+    }
+    Ok(mmap)
+}
+
+pub fn prepare_segment_temp(root: &Path, id: u64, segment_size: usize) -> Result<MmapFile> {
+    let temp_path = segment_temp_path(root, id);
+    let _ = std::fs::remove_file(&temp_path);
+    let mut mmap = MmapFile::create(&temp_path, segment_size)?;
+    write_segment_header(&mut mmap, id as u32, 0)?;
+    // Prefault pages by writing to them.
+    // Skip the first page because create_segment already wrote the header there.
+    let slice = mmap.as_mut_slice();
+    let len = slice.len();
+    let page_size = 4096;
+    let mut offset = page_size;
+    while offset < len {
+        // Simple write to force page allocation
+        slice[offset] = 0;
+        offset += page_size;
+    }
+    Ok(mmap)
+}
+
+pub fn publish_segment(temp: &Path, final_path: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let temp_c = CString::new(temp.as_os_str().as_bytes())
+            .map_err(|_| Error::Unsupported("segment temp path contains null byte"))?;
+        let final_c = CString::new(final_path.as_os_str().as_bytes())
+            .map_err(|_| Error::Unsupported("segment path contains null byte"))?;
+        let rc = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                temp_c.as_ptr(),
+                libc::AT_FDCWD,
+                final_c.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::ENOSYS) && err.raw_os_error() != Some(libc::EINVAL) {
+            return Err(Error::Io(err));
+        }
+    }
+
+    if final_path.exists() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "segment already exists",
+        )));
+    }
+    std::fs::rename(temp, final_path)?;
+    Ok(())
 }
 
 pub fn validate_segment_size(segment_size: u64) -> Result<usize> {
@@ -347,4 +447,27 @@ fn reader_meta_crc(payload: &[u8]) -> u32 {
     let mut hasher = Hasher::new();
     hasher.update(payload);
     hasher.finalize()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn open_or_create_preserves_preallocated() -> Result<()> {
+        let dir = tempdir()?;
+        let root = dir.path();
+        let segment_id = 1_u64;
+        let segment_size = 4096_usize;
+        let mut mmap = create_segment(root, segment_id, segment_size)?;
+        let sentinel_offset = segment_size - 1;
+        mmap.as_mut_slice()[sentinel_offset] = 0xAB;
+        mmap.flush_sync()?;
+        drop(mmap);
+
+        let opened = open_or_create_segment(root, segment_id, segment_size)?;
+        assert_eq!(opened.as_slice()[sentinel_offset], 0xAB);
+        Ok(())
+    }
 }

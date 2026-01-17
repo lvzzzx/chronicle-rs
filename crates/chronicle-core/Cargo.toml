@@ -24,3 +24,7 @@ harness = false
 [[bench]]
 name = "read"
 harness = false
+
+[[bench]]
+name = "dir_contention"
+harness = false

@@ -78,6 +78,72 @@ loop {
 }
 ```
 
+## Sidecar Control Plane with Dedicated Workers
+
+When the control plane grows (discovery + retention + preallocation + logging), a single sidecar thread can become a bottleneck. For strict ULL systems, split the control plane into **dedicated workers** so a slow task cannot delay preallocation or interfere with roll behavior.
+
+### What "Worker" Means
+A **worker** is a dedicated background execution unit (typically a single OS thread) that owns exactly one cold-path responsibility and processes a bounded queue of requests. The hot path never waits on a worker.
+
+### Recommended Worker Split
+
+1. **Prealloc Worker (highest priority)**
+   * **Role:** Prepare the *next* segment ahead of time.
+   * **Safety rules:**
+     * Never touch the live segment file path.
+     * Preallocate into a temp file, then publish via rename/link.
+     * Attach a `segment_id` to the prepared mmap and only consume if it matches.
+     * Discard stale results silently.
+   * **Why:** Prevents roll stalls and avoids data corruption under high roll rates.
+
+2. **Discovery Worker (lower priority)**
+   * **Role:** Scan for new streams/readers, open and validate them.
+   * **Handoff:** Send fully initialized readers to the hot thread via a bounded channel.
+
+3. **Retention Worker (lower priority)**
+   * **Role:** Periodic cleanup of old segments using `retention::cleanup_segments`.
+   * **Constraint:** Never touch the active head segment.
+
+### Control Plane Topology
+
+* **Hot Thread:** append + roll only; no blocking I/O.
+* **Workers:** each runs on a shared core with no affinity requirements.
+* **Queues:** bounded; prealloc queue depth is 1-2 to cap work.
+
+### Minimal Prealloc Worker Skeleton
+
+```rust
+struct PreparedSegment {
+    segment_id: u64,
+    mmap: MmapFile,
+}
+
+// Sidecar worker: prealloc only
+thread::spawn(move || {
+    while let Ok(req) = prealloc_rx.recv() {
+        let temp_path = segment_temp_path(&root, req.segment_id);
+        if let Ok(mmap) = prepare_segment(&root, req.segment_id, size) {
+            if expected_next_id.load(Ordering::Acquire) == req.segment_id {
+                let _ = publish_segment(&temp_path, &segment_path(&root, req.segment_id));
+                let _ = prepared_slot.swap(Some(PreparedSegment { segment_id: req.segment_id, mmap }));
+            }
+        }
+        // stale or failed work is dropped
+    }
+});
+```
+
+### Integration Notes for This Codebase
+
+* **Avoid truncating published segments:** If preallocation publishes a fully prepared file, the writer must try `open_segment` first. Calling `create_segment` (which truncates) defeats preallocation and reintroduces `ftruncate` on the hot path. Only fall back to `create_segment` when the file truly does not exist.
+* **Verify identity before use:** The prepared mmap must carry the `segment_id`, and the writer should validate the header before swapping (or rely on `open_segment`'s header checks).
+* **Retention can still block on directory locks:** `unlink` and `rename` contend on the directory inode. If retention deletes large batches, it can stall `open`/`rename` during roll. Consider batching deletes, yielding between unlinks, or renaming into a trash directory and deleting later.
+
+### Applicability
+
+* **ULL Trading Loops:** prealloc worker isolates roll latency from discovery or retention jitter.
+* **Routers/Strategy Hosts:** discovery can block without affecting the writer.
+
 ## Async Cleanup (Retention) Pattern
 
 To avoid filesystem latency spikes (metadata scans, file deletion) on the Hot Path, strict ULL systems must **disable** built-in limits in the Writer and offload retention to a background thread.
