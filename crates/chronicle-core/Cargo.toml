@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "fanin"
 harness = false
+
+[[bench]]
+name = "baseline_uds"
+harness = false
