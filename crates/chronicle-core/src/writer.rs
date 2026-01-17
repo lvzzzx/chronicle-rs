@@ -180,9 +180,26 @@ impl Queue {
         lock.update_epoch(writer_epoch)?;
         control.set_writer_heartbeat_ns(now_ns()?);
 
+        let (control_segment, control_offset) = control.segment_index();
+
         let index_path = path.join(INDEX_FILE);
         let index = load_index(&index_path)?;
         let mut segment_id = index.current_segment as u32;
+        let mut scan_offset = index.write_offset as usize;
+
+        if control_segment > segment_id {
+            let prev_segment = control_segment - 1;
+            let prev_path = segment_path(&path, prev_segment as u64);
+            if prev_path.exists() {
+                let mut prev_mmap = open_segment(&path, prev_segment as u64, segment_size)?;
+                let prev_header = read_segment_header(&prev_mmap)?;
+                if (prev_header.flags & SEG_FLAG_SEALED) == 0 {
+                    crate::segment::repair_unsealed_tail(&mut prev_mmap, segment_size)?;
+                }
+            }
+            segment_id = control_segment;
+            scan_offset = control_offset as usize;
+        }
         let mut mmap = if segment_path(&path, segment_id as u64).exists() {
             open_segment(&path, segment_id as u64, segment_size)?
         } else {
@@ -190,7 +207,7 @@ impl Queue {
         };
 
         let (tail_offset, tail_partial) =
-            scan_segment_tail(&mmap, index.write_offset as usize, segment_size)?;
+            scan_segment_tail(&mmap, scan_offset, segment_size)?;
         let mut write_offset = tail_offset as u64;
 
         if tail_partial {
@@ -606,7 +623,10 @@ mod tests {
     use super::PreparedSegment;
     use crate::header::HEADER_SIZE;
     use crate::segment::SEG_DATA_OFFSET;
+    use crate::segment::SEG_FLAG_SEALED;
     use crate::segment::create_segment;
+    use crate::segment::open_segment;
+    use crate::segment::read_segment_header;
     use crate::writer::WriterConfig;
     use crate::Error;
     use tempfile::tempdir;
@@ -669,5 +689,38 @@ mod tests {
 
         writer.roll_segment().expect("roll segment");
         assert_eq!(writer.segment_id as u64, current + 1);
+    }
+
+    #[test]
+    fn recovery_advances_on_control_segment_even_if_unsealed() {
+        let dir = tempdir().expect("tempdir");
+        let config = WriterConfig {
+            segment_size_bytes: 4096,
+            ..WriterConfig::default()
+        };
+        let mut writer =
+            Queue::open_publisher_with_config(dir.path(), config).expect("open publisher");
+
+        writer
+            .append_with_timestamp(1, b"alpha", 0)
+            .expect("append alpha");
+
+        let current_segment = writer.segment_id;
+        let next_segment = current_segment + 1;
+        create_segment(dir.path(), next_segment as u64, writer.segment_size)
+            .expect("create next segment");
+        writer
+            .control
+            .set_segment_index(next_segment, SEG_DATA_OFFSET as u64);
+        drop(writer);
+
+        let writer = Queue::open_publisher_with_config(dir.path(), config)
+            .expect("reopen publisher");
+        assert_eq!(writer.segment_id, next_segment);
+
+        let old_mmap = open_segment(dir.path(), current_segment as u64, writer.segment_size)
+            .expect("open old segment");
+        let old_header = read_segment_header(&old_mmap).expect("read old header");
+        assert_eq!(old_header.flags & SEG_FLAG_SEALED, SEG_FLAG_SEALED);
     }
 }
