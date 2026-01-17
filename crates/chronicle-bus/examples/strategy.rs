@@ -53,9 +53,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fanin.wait()?;
         
         while let Some(msg) = fanin.next()? {
+            let source = msg.source;
             let text = std::str::from_utf8(&msg.payload).unwrap_or("");
-            
-            match msg.source {
+
+            match source {
                 0 => { // Market Data Feed
                     if payload_symbol_matches(text, &options.symbol) {
                         let order_id = order_seq;
@@ -73,7 +74,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 _ => {}
             }
-            fanin.commit(msg.source)?;
+
+            drop(msg);
+            fanin.commit(source)?;
         }
 
         // Discovery logic for Orders In channel

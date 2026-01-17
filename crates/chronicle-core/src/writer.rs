@@ -808,6 +808,7 @@ mod tests {
     use crate::header::HEADER_SIZE;
     use crate::segment::SEG_DATA_OFFSET;
     use crate::segment::SEG_FLAG_SEALED;
+    use crate::segment::create_segment;
     use crate::segment::open_segment;
     use crate::segment::read_segment_header;
     use crate::segment::segment_path;
