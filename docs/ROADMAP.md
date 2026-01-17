@@ -14,6 +14,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Phase 7 (Queue Discovery) completed in `crates/chronicle-bus/` (scan + watch + dedup in `RouterDiscovery::poll()` with Linux inotify and periodic rescan fallback).
 - Phase 8 (Hardening & Benchmarks) completed; ExecPlan in `execplans/phase-8-hardening-benchmarks.md`.
 - Phase 9 (Docs, Examples & Operational Guidance) completed; examples in `crates/chronicle-bus/examples` and README quickstart added.
+- Phase 10 (CLI Tooling) completed; ExecPlan in `execplans/phase-10-cli-tooling.md`.
 
 ## Phases
 

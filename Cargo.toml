@@ -2,5 +2,6 @@
 members = [
     "crates/chronicle-core",
     "crates/chronicle-bus",
+    "crates/chronicle-cli",
 ]
 resolver = "2"

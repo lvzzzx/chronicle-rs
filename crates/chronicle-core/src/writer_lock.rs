@@ -7,6 +7,13 @@ use std::path::Path;
 use crate::{Error, Result};
 use std::os::unix::io::AsRawFd;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriterLockInfo {
+    pub pid: u32,
+    pub start_time: u64,
+    pub epoch: u64,
+}
+
 pub(crate) fn try_lock(file: &File) -> Result<bool> {
     let res = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if res == 0 {
@@ -34,18 +41,45 @@ pub(crate) fn writer_alive(path: &Path) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
+    let info = match read_lock_info(path)? {
+        Some(info) => info,
+        None => return Ok(false),
+    };
+    lock_owner_alive(&info)
+}
+
+pub fn read_lock_info(path: &Path) -> Result<Option<WriterLockInfo>> {
+    if !path.exists() {
+        return Ok(None);
+    }
     let file = OpenOptions::new().read(true).open(path)?;
-    lock_owner_alive(&file)
+    let (pid, start_time, epoch) = read_lock_record(&file)?;
+    let info = WriterLockInfo {
+        pid,
+        start_time,
+        epoch,
+    };
+    #[cfg(target_os = "linux")]
+    {
+        if info.pid == 0 && info.start_time == 0 && info.epoch == 0 {
+            return Ok(None);
+        }
+    }
+    Ok(Some(info))
 }
 
 #[cfg(target_os = "linux")]
-fn lock_owner_alive(file: &File) -> Result<bool> {
-    let (pid, start_time, _) = read_lock_record(file)?;
-    if pid == 0 {
+pub fn lock_owner_alive(info: &WriterLockInfo) -> Result<bool> {
+    if info.pid == 0 {
         return Ok(false);
     }
-    let proc_start = proc_start_time(pid)?;
-    Ok(proc_start == start_time)
+    let proc_start = proc_start_time(info.pid)?;
+    Ok(proc_start == info.start_time)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn lock_owner_alive(_info: &WriterLockInfo) -> Result<bool> {
+    Ok(true)
 }
 
 #[cfg(target_os = "linux")]
@@ -98,11 +132,6 @@ fn read_lock_record(file: &File) -> Result<(u32, u64, u64)> {
         .parse::<u64>()
         .unwrap_or(0);
     Ok((pid, start_time, epoch))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn lock_owner_alive(_file: &File) -> Result<bool> {
-    Ok(true)
 }
 
 #[cfg(not(target_os = "linux"))]

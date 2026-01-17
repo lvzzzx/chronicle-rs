@@ -46,6 +46,43 @@ pub fn cleanup_segments(
     Ok(deleted)
 }
 
+pub fn retention_candidates(
+    root: &Path,
+    head_segment: u64,
+    head_offset: u64,
+    segment_size: u64,
+) -> Result<Vec<u64>> {
+    let readers_dir = root.join("readers");
+    if !readers_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let min_segment = min_live_reader_segment(root, head_segment, head_offset, segment_size)?;
+
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("q") {
+            continue;
+        }
+        let name = match path.file_name().and_then(|name| name.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+        let id = match parse_segment_id(name) {
+            Some(id) => id,
+            None => continue,
+        };
+        if id < min_segment && id < head_segment {
+            candidates.push(id);
+        }
+    }
+
+    candidates.sort_unstable();
+    Ok(candidates)
+}
+
 pub fn min_live_reader_segment(
     root: &Path,
     head_segment: u64,

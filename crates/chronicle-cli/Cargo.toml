@@ -1,0 +1,13 @@
+[package]
+name = "chronicle-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "chron-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+chronicle-core = { path = "../chronicle-core" }
+chronicle-bus = { path = "../chronicle-bus" }

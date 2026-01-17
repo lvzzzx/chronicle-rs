@@ -16,6 +16,7 @@
 - [Architecture](#architecture)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [CLI Tooling](#cli-tooling)
 - [Configuration](#configuration)
 - [Development](#development)
 - [Roadmap](#roadmap)
@@ -158,6 +159,26 @@ strategy strategy_a: order order_id=0 symbol=BTC qty=1 side=BUY
 router: discovered strategy_a (orders_out=..., orders_in=...)
 router: order from strategy_a (order_id=0 symbol=BTC qty=1 side=BUY)
 strategy strategy_a: ack order_id=0 status=ACK
+```
+
+---
+
+## CLI Tooling
+
+The `chron-cli` binary provides queue inspection and debugging utilities:
+
+```bash
+# Inspect a queue's head position, readers, and lock status.
+cargo run -p chronicle-cli -- inspect ./demo_bus/market_data/queue/demo_feed
+
+# Tail messages (first 3) with hexdumps.
+cargo run -p chronicle-cli -- tail ./demo_bus/market_data/queue/demo_feed --limit 3
+
+# Scan a bus root for stale locks and retention candidates.
+cargo run -p chronicle-cli -- doctor ./demo_bus
+
+# Run a local throughput benchmark (keeps the queue on disk).
+cargo run -p chronicle-cli -- bench --queue-path ./cli_demo --messages 10000 --payload-bytes 64 --keep
 ```
 
 ---
