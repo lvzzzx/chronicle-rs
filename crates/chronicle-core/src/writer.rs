@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -24,6 +24,10 @@ const WRITER_LOCK_FILE: &str = "writer.lock";
 const BACKPRESSURE_POLL_US: u64 = 100;
 const RETENTION_CHECK_INTERVAL_MS: u64 = 10;
 const RETENTION_CHECK_BYTES: u64 = 1024 * 1024;
+const PREALLOC_SPIN_ITERS: u32 = 64;
+const PREALLOC_YIELD_EVERY: u32 = 64;
+const PREALLOC_QUEUE_DEPTH: usize = 1;
+const PREALLOC_NO_REQUEST: u64 = u64::MAX;
 
 // Avoid scanning reader metadata on every append; refresh on coarse thresholds.
 struct RetentionCache {
@@ -150,6 +154,128 @@ struct PreparedSegment {
     mmap: MmapFile,
 }
 
+struct PreallocWorker {
+    wakeups: mpsc::SyncSender<()>,
+    desired: Arc<AtomicU64>,
+    ready: mpsc::Receiver<PreparedSegment>,
+    errors: Arc<AtomicU64>,
+}
+
+impl PreallocWorker {
+    fn new(root: PathBuf, segment_size: usize) -> Result<Self> {
+        let (wakeup_tx, wakeup_rx) = mpsc::sync_channel(PREALLOC_QUEUE_DEPTH);
+        let (ready_tx, ready_rx) = mpsc::sync_channel(PREALLOC_QUEUE_DEPTH);
+        let errors = Arc::new(AtomicU64::new(0));
+        let errors_handle = Arc::clone(&errors);
+        let desired = Arc::new(AtomicU64::new(PREALLOC_NO_REQUEST));
+        let desired_handle = Arc::clone(&desired);
+        thread::Builder::new()
+            .name("segment-prealloc".to_string())
+            .spawn(move || {
+                while wakeup_rx.recv().is_ok() {
+                    let next_segment_id =
+                        desired_handle.swap(PREALLOC_NO_REQUEST, Ordering::AcqRel);
+                    if next_segment_id == PREALLOC_NO_REQUEST {
+                        continue;
+                    }
+                    let temp_path = segment_temp_path(&root, next_segment_id);
+                    let mmap = match prepare_segment_temp(&root, next_segment_id, segment_size) {
+                        Ok(mmap) => mmap,
+                        Err(_) => {
+                            let _ = std::fs::remove_file(&temp_path);
+                            errors_handle.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                    };
+                    if publish_segment(&temp_path, &segment_path(&root, next_segment_id)).is_ok() {
+                        if ready_tx
+                            .send(PreparedSegment {
+                                segment_id: next_segment_id,
+                                mmap,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    } else {
+                        let _ = std::fs::remove_file(&temp_path);
+                        errors_handle.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            })
+            .map_err(Error::Io)?;
+        Ok(Self {
+            wakeups: wakeup_tx,
+            desired,
+            ready: ready_rx,
+            errors,
+        })
+    }
+
+    fn request(&self, next_segment_id: u64) {
+        self.desired.store(next_segment_id, Ordering::Release);
+        let _ = self.wakeups.try_send(());
+    }
+
+    fn try_take(&self, next_segment: u64) -> Result<Option<MmapFile>> {
+        loop {
+            match self.ready.try_recv() {
+                Ok(prepared) => {
+                    if prepared.segment_id == next_segment {
+                        return Ok(Some(prepared.mmap));
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => return Ok(None),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "prealloc worker closed",
+                    )))
+                }
+            }
+        }
+    }
+
+    fn error_count(&self) -> u64 {
+        self.errors.load(Ordering::Relaxed)
+    }
+}
+
+struct AsyncSealer {
+    sender: mpsc::Sender<MmapFile>,
+    errors: Arc<AtomicU64>,
+}
+
+impl AsyncSealer {
+    fn new() -> Result<Self> {
+        let (sender, receiver) = mpsc::channel::<MmapFile>();
+        let errors = Arc::new(AtomicU64::new(0));
+        let errors_handle = Arc::clone(&errors);
+        thread::Builder::new()
+            .name("segment-sync".to_string())
+            .spawn(move || {
+                while let Ok(mmap) = receiver.recv() {
+                    if mmap.sync().is_err() {
+                        errors_handle.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            })
+            .map_err(Error::Io)?;
+        Ok(Self { sender, errors })
+    }
+
+    fn submit(&self, mmap: MmapFile) -> Result<()> {
+        self.sender
+            .send(mmap)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "async sealer closed"))
+            .map_err(Error::Io)
+    }
+
+    fn error_count(&self) -> u64 {
+        self.errors.load(Ordering::Relaxed)
+    }
+}
+
 pub struct QueueWriter {
     path: PathBuf,
     control: ControlFile,
@@ -160,8 +286,8 @@ pub struct QueueWriter {
     config: WriterConfig,
     segment_size: usize,
     retention_cache: RetentionCache,
-    prealloc_slot: Arc<Mutex<Option<PreparedSegment>>>,
-    expected_prealloc_id: Arc<AtomicU64>,
+    prealloc: PreallocWorker,
+    async_sealer: Option<AsyncSealer>,
     _lock: WriterLock,
 }
 
@@ -259,8 +385,12 @@ impl Queue {
 
         control.set_segment_index(segment_id, write_offset);
 
-        let prealloc_slot = Arc::new(Mutex::new(None));
-        let expected_prealloc_id = Arc::new(AtomicU64::new(segment_id as u64 + 1));
+        let prealloc = PreallocWorker::new(path.clone(), segment_size)?;
+        let async_sealer = if config.defer_seal_sync {
+            Some(AsyncSealer::new()?)
+        } else {
+            None
+        };
         let writer = QueueWriter {
             path,
             control,
@@ -271,8 +401,8 @@ impl Queue {
             config,
             segment_size,
             retention_cache: RetentionCache::new(config.retention_check_interval, config.retention_check_bytes),
-            prealloc_slot,
-            expected_prealloc_id,
+            prealloc,
+            async_sealer,
             _lock: lock,
         };
 
@@ -282,27 +412,21 @@ impl Queue {
 }
 
 impl QueueWriter {
-    fn take_preallocated(&self, next_segment: u64) -> Result<Option<MmapFile>> {
-        let mut slot = self
-            .prealloc_slot
-            .lock()
-            .map_err(|_| Error::Corrupt("prealloc_slot lock poisoned"))?;
-        if let Some(prepared) = slot.take() {
-            if prepared.segment_id == next_segment {
-                return Ok(Some(prepared.mmap));
-            }
-        }
-        Ok(None)
+    fn take_preallocated(&mut self, next_segment: u64) -> Result<Option<MmapFile>> {
+        self.prealloc.try_take(next_segment)
     }
 
-    fn acquire_preallocated(&self, next_segment: u64) -> Result<Option<MmapFile>> {
+    fn acquire_preallocated(&mut self, next_segment: u64) -> Result<Option<MmapFile>> {
         if let Some(mmap) = self.take_preallocated(next_segment)? {
             return Ok(Some(mmap));
         }
 
         if self.config.prealloc_wait.is_zero() {
             if self.config.require_prealloc {
-                return Err(Error::Corrupt("preallocated segment not ready"));
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "preallocated segment not ready",
+                )));
             }
             return Ok(None);
         }
@@ -311,59 +435,35 @@ impl QueueWriter {
 
         let mut spins = 0_u32;
         loop {
+            for _ in 0..PREALLOC_SPIN_ITERS {
+                std::hint::spin_loop();
+            }
+
             if let Some(mmap) = self.take_preallocated(next_segment)? {
                 return Ok(Some(mmap));
+            }
+
+            spins = spins.wrapping_add(1);
+            if spins % PREALLOC_YIELD_EVERY == 0 {
+                thread::yield_now();
             }
 
             if Instant::now() >= deadline {
                 break;
             }
-
-            spins = spins.wrapping_add(1);
-            if spins % 1024 == 0 {
-                thread::yield_now();
-            } else {
-                std::hint::spin_loop();
-            }
         }
 
         if self.config.require_prealloc {
-            return Err(Error::Corrupt("preallocated segment not ready"));
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "preallocated segment not ready",
+            )));
         }
         Ok(None)
     }
 
     fn trigger_preallocation(&self, next_segment_id: u64) {
-        self.expected_prealloc_id
-            .store(next_segment_id, Ordering::Release);
-        let root = self.path.clone();
-        let size = self.segment_size;
-        let prealloc_slot = self.prealloc_slot.clone();
-        let expected_prealloc_id = self.expected_prealloc_id.clone();
-        thread::spawn(move || {
-            let temp_path = segment_temp_path(&root, next_segment_id);
-            let mmap = match prepare_segment_temp(&root, next_segment_id, size) {
-                Ok(mmap) => mmap,
-                Err(_) => {
-                    let _ = std::fs::remove_file(&temp_path);
-                    return;
-                }
-            };
-            if expected_prealloc_id.load(Ordering::Acquire) != next_segment_id {
-                let _ = std::fs::remove_file(&temp_path);
-                return;
-            }
-            if publish_segment(&temp_path, &segment_path(&root, next_segment_id)).is_ok() {
-                if let Ok(mut slot) = prealloc_slot.lock() {
-                    *slot = Some(PreparedSegment {
-                        segment_id: next_segment_id,
-                        mmap,
-                    });
-                }
-            } else {
-                let _ = std::fs::remove_file(&temp_path);
-            }
-        });
+        self.prealloc.request(next_segment_id);
     }
 
     pub fn segment_id(&self) -> u32 {
@@ -533,6 +633,16 @@ impl QueueWriter {
         Ok(())
     }
 
+    pub fn async_seal_error_count(&self) -> u64 {
+        self.async_sealer
+            .as_ref()
+            .map_or(0, |sealer| sealer.error_count())
+    }
+
+    pub fn prealloc_error_count(&self) -> u64 {
+        self.prealloc.error_count()
+    }
+
     pub fn cleanup(&self) -> Result<Vec<u64>> {
         crate::retention::cleanup_segments(
             &self.path,
@@ -560,9 +670,11 @@ impl QueueWriter {
         seal_segment(&mut self.mmap)?;
         if self.config.defer_seal_sync {
             let old_mmap = std::mem::replace(&mut self.mmap, new_mmap);
-            thread::spawn(move || {
-                let _ = old_mmap.sync();
-            });
+            if let Some(sealer) = &self.async_sealer {
+                sealer.submit(old_mmap)?;
+            } else {
+                old_mmap.sync()?;
+            }
         } else {
             self.mmap.sync()?;
             self.mmap = new_mmap;
@@ -693,15 +805,15 @@ fn repair_tail_and_roll(
 #[cfg(test)]
 mod tests {
     use super::Queue;
-    use super::PreparedSegment;
     use crate::header::HEADER_SIZE;
     use crate::segment::SEG_DATA_OFFSET;
     use crate::segment::SEG_FLAG_SEALED;
-    use crate::segment::create_segment;
     use crate::segment::open_segment;
     use crate::segment::read_segment_header;
+    use crate::segment::segment_path;
     use crate::writer::WriterConfig;
     use crate::Error;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -740,25 +852,18 @@ mod tests {
         };
         let mut writer = Queue::open_publisher_with_config(dir.path(), config)
             .expect("open publisher");
-        writer
-            .expected_prealloc_id
-            .store(u64::MAX, std::sync::atomic::Ordering::Release);
-        {
-            let mut slot = writer.prealloc_slot.lock().expect("prealloc slot");
-            *slot = None;
-        }
 
         let current = writer.segment_id as u64;
         let stale_id = current + 2;
-        let mmap = create_segment(dir.path(), stale_id, writer.segment_size)
-            .expect("create stale segment");
-        {
-            let mut slot = writer.prealloc_slot.lock().expect("prealloc slot");
-            *slot = Some(PreparedSegment {
-                segment_id: stale_id,
-                mmap,
-            });
+        writer.trigger_preallocation(stale_id);
+        let stale_path = segment_path(dir.path(), stale_id);
+        for _ in 0..100 {
+            if stale_path.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
+        let _ = writer.acquire_preallocated(current + 1).expect("acquire");
 
         writer.roll_segment().expect("roll segment");
         assert_eq!(writer.segment_id as u64, current + 1);
