@@ -674,7 +674,7 @@ impl QueueWriter {
 
     fn roll_segment(&mut self) -> Result<()> {
         let next_segment = self.segment_id + 1;
-        let mut new_mmap = if let Some(prepared) = self.acquire_preallocated(next_segment as u64)? {
+        let new_mmap = if let Some(prepared) = self.acquire_preallocated(next_segment as u64)? {
             let header = read_segment_header(&prepared)?;
             if header.segment_id != next_segment {
                 return Err(Error::Corrupt("preallocated segment id mismatch"));
