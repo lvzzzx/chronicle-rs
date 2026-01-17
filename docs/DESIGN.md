@@ -241,14 +241,22 @@ Scalability statement:
 └── orders/
     └── queue/
         ├── strategy_A/
-        │   ├── control.meta
-        │   ├── writer.lock
-        │   ├── 000000000.q
-        │   ├── 000000001.q
-        │   ├── index.meta           # optional tail checkpoint
-        │   └── readers/
-        │       ├── router.meta
-        │       └── audit.meta
+        │   ├── orders_out/
+        │   │   ├── READY
+        │   │   ├── control.meta
+        │   │   ├── writer.lock
+        │   │   ├── 000000000.q
+        │   │   ├── 000000001.q
+        │   │   ├── index.meta           # optional tail checkpoint
+        │   │   └── readers/
+        │   │       └── router.meta
+        │   └── orders_in/
+        │       ├── READY
+        │       ├── control.meta
+        │       ├── writer.lock
+        │       ├── 000000000.q
+        │       └── readers/
+        │           └── strategy_A.meta
         └── strategy_B/
             └── ...
 
@@ -631,7 +639,7 @@ Implementation notes:
 │  ├─ Reads: binance_spot       ├─ Reads: binance_spot        │
 │  ├─ Filters: BTC,ETH,SOL      ├─ Filters: BTC,ETH           │
 │  └─ Writes to:                └─ Writes to:                 │
-│     orders/strategy_A/           orders/strategy_B/         │
+│     orders/queue/strategy_A/     orders/queue/strategy_B/   │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -640,9 +648,9 @@ Implementation notes:
 ├─────────────────────────────────────────────────────────────┤
 │  Router Process                                              │
 │  ├─ Discovery: Finds strategy_A, strategy_B queues          │
-│  ├─ Reads: orders/strategy_*/queue/                         │
+│  ├─ Reads: orders/queue/strategy_*/orders_out               │
 │  ├─ Aggregates & routes to exchange                         │
-│  └─ Writes fills back to: orders/strategy_*/acks/          │
+│  └─ Writes fills back to: orders/queue/strategy_*/orders_in │
 └─────────────────────────────────────────────────────────────┘
 ```
 

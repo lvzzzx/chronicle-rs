@@ -59,11 +59,12 @@ The system is split into two layers to ensure the critical data path remains lig
 Chronicle-RS enforces a **Multi-Process Architecture**:
 
 ```text
-[Binance Feed] --(write)--> [queue/binance] --(read)--> [Strategy A]
-                                            --(read)--> [Strategy B]
-                                                            |
-[Strategy A] --(write)--> [queue/orders_A] --(read)--> [Router]
-[Strategy B] --(write)--> [queue/orders_B] --(read)--> [Router]
+[Binance Feed] --(write)--> [market_data/queue/binance] --(read)--> [Strategy A]
+                                                    --(read)--> [Strategy B]
+                                                                    |
+[Strategy A] --(write)--> [orders/queue/strategy_A/orders_out] --(read)--> [Router]
+[Strategy B] --(write)--> [orders/queue/strategy_B/orders_out] --(read)--> [Router]
+[Router] --(write)--> [orders/queue/strategy_*/orders_in] --(read)--> [Strategy *]
 ```
 
 See [DESIGN.md](docs/DESIGN.md) for the complete architectural specification.
@@ -136,6 +137,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### 3. End-to-End Demo (Feed → Strategy → Router)
+Run the demo processes in separate terminals:
+
+```bash
+# Terminal 1: market data feed
+cargo run -p chronicle-bus --example feed -- --bus-root ./demo_bus
+
+# Terminal 2: strategy filtering BTC and emitting orders
+cargo run -p chronicle-bus --example strategy -- --bus-root ./demo_bus --strategy strategy_a --symbol BTC
+
+# Terminal 3: router discovery + ack loop
+cargo run -p chronicle-bus --example router -- --bus-root ./demo_bus
+```
+
+Expected log excerpts:
+```
+feed: published symbol=BTC price=...
+strategy strategy_a: order order_id=0 symbol=BTC qty=1 side=BUY
+router: discovered strategy_a (orders_out=..., orders_in=...)
+router: order from strategy_a (order_id=0 symbol=BTC qty=1 side=BUY)
+strategy strategy_a: ack order_id=0 status=ACK
+```
+
 ---
 
 ## Configuration
@@ -147,10 +171,16 @@ Standard deployment structure (configurable root):
 ```text
 /var/lib/hft_bus/
 ├── market_data/
-│   └── binance/ ...
+│   └── queue/
+│       └── binance/ ...
 └── orders/
-    ├── strategy_a/ ...
-    └── strategy_b/ ...
+    └── queue/
+        ├── strategy_a/
+        │   ├── orders_out/ ...
+        │   └── orders_in/ ...
+        └── strategy_b/
+            ├── orders_out/ ...
+            └── orders_in/ ...
 ```
 
 ### Tuning Parameters
