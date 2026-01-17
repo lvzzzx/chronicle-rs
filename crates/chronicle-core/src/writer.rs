@@ -294,6 +294,10 @@ impl QueueWriter {
         });
     }
 
+    pub fn segment_id(&self) -> u32 {
+        self.segment_id
+    }
+
     pub fn append(&mut self, type_id: u16, payload: &[u8]) -> Result<()> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

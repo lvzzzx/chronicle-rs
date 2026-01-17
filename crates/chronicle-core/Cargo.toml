@@ -28,3 +28,11 @@ harness = false
 [[bench]]
 name = "dir_contention"
 harness = false
+
+[[bench]]
+name = "ipc"
+harness = false
+
+[[bench]]
+name = "roll_latency"
+harness = false
