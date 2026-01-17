@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use chronicle_core::reader::WaitStrategy;
 use chronicle_core::Queue;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use tempfile::tempdir;
 
 const MSG_SIZE: usize = 256;
@@ -13,6 +13,7 @@ const THROUGHPUT_BATCH: usize = 1_000_000;
 
 fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("ipc_throughput");
+    group.measurement_time(Duration::from_secs(40));
     group.throughput(Throughput::Elements(THROUGHPUT_BATCH as u64));
 
     group.bench_function("1_writer_1_reader", |b| {

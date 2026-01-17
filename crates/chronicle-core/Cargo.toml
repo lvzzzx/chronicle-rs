@@ -36,3 +36,7 @@ harness = false
 [[bench]]
 name = "roll_latency"
 harness = false
+
+[[bench]]
+name = "fanin"
+harness = false
