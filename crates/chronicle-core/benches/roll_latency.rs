@@ -1,9 +1,7 @@
-use std::sync::{Arc, Barrier};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use chronicle_core::reader::WaitStrategy;
-use chronicle_core::writer::{QueueWriter, WriterConfig};
+use chronicle_core::writer::WriterConfig;
 use chronicle_core::Queue;
 use criterion::{criterion_group, criterion_main, Criterion};
 use tempfile::tempdir;
@@ -20,6 +18,9 @@ fn bench_roll_latency(_c: &mut Criterion) {
 
     let config = WriterConfig {
         segment_size_bytes: SEGMENT_SIZE,
+        defer_seal_sync: true,
+        prealloc_wait: Duration::from_millis(1),
+        require_prealloc: true,
         ..Default::default()
     };
 

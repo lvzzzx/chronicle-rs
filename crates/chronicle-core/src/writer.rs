@@ -91,6 +91,12 @@ pub struct WriterConfig {
     pub segment_size_bytes: u64,
     pub retention_check_interval: Duration,
     pub retention_check_bytes: u64,
+    // Offload segment sync to a background thread on roll (lower latency, weaker crash durability).
+    pub defer_seal_sync: bool,
+    // Spin-wait budget for a preallocated next segment during roll.
+    pub prealloc_wait: Duration,
+    // If true, roll errors when no preallocated segment is ready after prealloc_wait.
+    pub require_prealloc: bool,
 }
 
 impl Default for WriterConfig {
@@ -102,6 +108,9 @@ impl Default for WriterConfig {
             segment_size_bytes: DEFAULT_SEGMENT_SIZE as u64,
             retention_check_interval: Duration::from_millis(RETENTION_CHECK_INTERVAL_MS),
             retention_check_bytes: RETENTION_CHECK_BYTES,
+            defer_seal_sync: false,
+            prealloc_wait: Duration::from_micros(0),
+            require_prealloc: false,
         }
     }
 }
@@ -118,6 +127,18 @@ impl WriterConfig {
             segment_size_bytes: DEFAULT_SEGMENT_SIZE as u64,
             retention_check_interval: Duration::from_millis(RETENTION_CHECK_INTERVAL_MS),
             retention_check_bytes: RETENTION_CHECK_BYTES,
+            defer_seal_sync: false,
+            prealloc_wait: Duration::from_micros(0),
+            require_prealloc: false,
+        }
+    }
+
+    pub fn ultra_low_latency() -> Self {
+        Self {
+            defer_seal_sync: true,
+            prealloc_wait: Duration::from_millis(1),
+            require_prealloc: true,
+            ..Self::default()
         }
     }
 }
@@ -261,6 +282,57 @@ impl Queue {
 }
 
 impl QueueWriter {
+    fn take_preallocated(&self, next_segment: u64) -> Result<Option<MmapFile>> {
+        let mut slot = self
+            .prealloc_slot
+            .lock()
+            .map_err(|_| Error::Corrupt("prealloc_slot lock poisoned"))?;
+        if let Some(prepared) = slot.take() {
+            if prepared.segment_id == next_segment {
+                return Ok(Some(prepared.mmap));
+            }
+        }
+        Ok(None)
+    }
+
+    fn acquire_preallocated(&self, next_segment: u64) -> Result<Option<MmapFile>> {
+        if let Some(mmap) = self.take_preallocated(next_segment)? {
+            return Ok(Some(mmap));
+        }
+
+        if self.config.prealloc_wait.is_zero() {
+            if self.config.require_prealloc {
+                return Err(Error::Corrupt("preallocated segment not ready"));
+            }
+            return Ok(None);
+        }
+
+        let deadline = Instant::now() + self.config.prealloc_wait;
+
+        let mut spins = 0_u32;
+        loop {
+            if let Some(mmap) = self.take_preallocated(next_segment)? {
+                return Ok(Some(mmap));
+            }
+
+            if Instant::now() >= deadline {
+                break;
+            }
+
+            spins = spins.wrapping_add(1);
+            if spins % 1024 == 0 {
+                thread::yield_now();
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+
+        if self.config.require_prealloc {
+            return Err(Error::Corrupt("preallocated segment not ready"));
+        }
+        Ok(None)
+    }
+
     fn trigger_preallocation(&self, next_segment_id: u64) {
         self.expected_prealloc_id
             .store(next_segment_id, Ordering::Release);
@@ -472,35 +544,32 @@ impl QueueWriter {
 
     fn roll_segment(&mut self) -> Result<()> {
         let next_segment = self.segment_id + 1;
-        let new_mmap = {
-            let mut slot = self
-                .prealloc_slot
-                .lock()
-                .map_err(|_| Error::Corrupt("prealloc_slot lock poisoned"))?;
-            if let Some(prepared) = slot.take() {
-                if prepared.segment_id == next_segment as u64 {
-                    let header = read_segment_header(&prepared.mmap)?;
-                    if header.segment_id != next_segment {
-                        return Err(Error::Corrupt("preallocated segment id mismatch"));
-                    }
-                    prepared.mmap
-                } else {
-                    open_or_create_segment(&self.path, next_segment as u64, self.segment_size)?
-                }
-            } else {
-                open_or_create_segment(&self.path, next_segment as u64, self.segment_size)?
+        let new_mmap = if let Some(prepared) = self.acquire_preallocated(next_segment as u64)? {
+            let header = read_segment_header(&prepared)?;
+            if header.segment_id != next_segment {
+                return Err(Error::Corrupt("preallocated segment id mismatch"));
             }
+            prepared
+        } else {
+            open_or_create_segment(&self.path, next_segment as u64, self.segment_size)?
         };
 
         self.control
             .set_segment_index(next_segment, SEG_DATA_OFFSET as u64);
 
         seal_segment(&mut self.mmap)?;
-        self.mmap.sync()?;
+        if self.config.defer_seal_sync {
+            let old_mmap = std::mem::replace(&mut self.mmap, new_mmap);
+            thread::spawn(move || {
+                let _ = old_mmap.sync();
+            });
+        } else {
+            self.mmap.sync()?;
+            self.mmap = new_mmap;
+        }
 
         self.segment_id = next_segment;
         self.write_offset = SEG_DATA_OFFSET as u64;
-        self.mmap = new_mmap;
         self.control.set_writer_heartbeat_ns(now_ns()?);
 
         self.control
