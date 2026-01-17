@@ -164,7 +164,6 @@ struct PreallocWorker {
     desired: Arc<AtomicU64>,
     ready: mpsc::Receiver<PreparedSegment>,
     errors: Arc<AtomicU64>,
-    memlock: bool,
 }
 
 impl PreallocWorker {
@@ -224,7 +223,6 @@ impl PreallocWorker {
             desired,
             ready: ready_rx,
             errors,
-            memlock,
         })
     }
 

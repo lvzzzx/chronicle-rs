@@ -19,7 +19,7 @@ fn bench_roll_latency(_c: &mut Criterion) {
     let config = WriterConfig {
         segment_size_bytes: SEGMENT_SIZE,
         defer_seal_sync: true,
-        prealloc_wait: Duration::from_millis(1),
+        prealloc_wait: Duration::from_millis(10),
         require_prealloc: true,
         ..Default::default()
     };
