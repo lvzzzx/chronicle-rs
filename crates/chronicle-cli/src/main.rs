@@ -154,8 +154,28 @@ fn cmd_tail(
     limit: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
+    let auto_reader = reader.is_none();
     let reader_name = reader.unwrap_or_else(|| format!("cli_tail_{}", std::process::id()));
-    let mut reader = Queue::open_subscriber(queue_path, &reader_name)?;
+    let result = run_tail_loop(queue_path, &reader_name, follow, limit, out);
+
+    if auto_reader {
+        let meta_path = queue_path
+            .join("readers")
+            .join(format!("{reader_name}.meta"));
+        let _ = fs::remove_file(meta_path);
+    }
+
+    result
+}
+
+fn run_tail_loop(
+    queue_path: &Path,
+    reader_name: &str,
+    follow: bool,
+    limit: Option<usize>,
+    out: &mut dyn Write,
+) -> Result<(), Box<dyn Error>> {
+    let mut reader = Queue::open_subscriber(queue_path, reader_name)?;
     let mut seen = 0usize;
     loop {
         if let Some(message) = reader.next()? {

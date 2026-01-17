@@ -1,7 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
-#[cfg(target_os = "linux")]
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::{Error, Result};
@@ -73,7 +71,13 @@ pub fn lock_owner_alive(info: &WriterLockInfo) -> Result<bool> {
     if info.pid == 0 {
         return Ok(false);
     }
-    let proc_start = proc_start_time(info.pid)?;
+    let proc_start = match proc_start_time(info.pid) {
+        Ok(start) => start,
+        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(false)
+        }
+        Err(err) => return Err(err),
+    };
     Ok(proc_start == info.start_time)
 }
 
@@ -109,7 +113,6 @@ fn proc_start_time(pid: u32) -> Result<u64> {
     Ok(start_time)
 }
 
-#[cfg(target_os = "linux")]
 fn read_lock_record(file: &File) -> Result<(u32, u64, u64)> {
     let mut contents = String::new();
     let mut clone = file.try_clone()?;
@@ -138,10 +141,4 @@ fn read_lock_record(file: &File) -> Result<(u32, u64, u64)> {
 fn lock_identity() -> Result<(u32, u64)> {
     let pid = std::process::id();
     Ok((pid, 0))
-}
-
-#[cfg(not(target_os = "linux"))]
-#[allow(dead_code)]
-fn read_lock_record(_file: &File) -> Result<(u32, u64, u64)> {
-    Ok((0, 0, 0))
 }
