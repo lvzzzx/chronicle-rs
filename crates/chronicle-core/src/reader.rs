@@ -29,8 +29,12 @@ pub struct MessageView<'a> {
 }
 
 pub enum WaitStrategy {
-    Hybrid { spin_us: u32 },
-    BusyPoll(Duration),
+    /// True busy-spinning. Burns 100% CPU on a single core for maximum responsiveness.
+    BusySpin,
+    /// High-performance hybrid: spins for a period, then parks (sleeps) in the kernel.
+    SpinThenPark { spin_us: u32 },
+    /// Low-priority periodic polling: yields to the OS for a fixed duration.
+    Sleep(Duration),
 }
 
 pub struct QueueReader {
@@ -80,7 +84,7 @@ impl Queue {
             read_offset: meta.offset,
             meta_path,
             meta,
-            wait_strategy: WaitStrategy::Hybrid {
+            wait_strategy: WaitStrategy::SpinThenPark {
                 spin_us: DEFAULT_SPIN_US,
             },
             segment_size,
@@ -152,11 +156,17 @@ impl QueueReader {
     pub fn wait(&mut self, timeout: Option<Duration>) -> Result<()> {
         self.maybe_heartbeat()?;
         match self.wait_strategy {
-            WaitStrategy::BusyPoll(duration) => {
+            WaitStrategy::BusySpin => {
+                while !self.peek_committed()? {
+                    std::hint::spin_loop();
+                }
+                return Ok(());
+            }
+            WaitStrategy::Sleep(duration) => {
                 std::thread::sleep(duration);
                 return Ok(());
             }
-            WaitStrategy::Hybrid { spin_us } => {
+            WaitStrategy::SpinThenPark { spin_us } => {
                 let spin_deadline = std::time::Instant::now()
                     + Duration::from_micros(spin_us as u64);
                 while std::time::Instant::now() < spin_deadline {
@@ -167,11 +177,27 @@ impl QueueReader {
                 }
             }
         }
-        let seq = self.control.notify_seq().load(Ordering::Acquire);
+
+        // Signal Suppression Protocol:
+        // 1. Register presence (SeqCst to ensure visibility before check)
+        self.control.waiters_pending().fetch_add(1, Ordering::SeqCst);
+
+        // 2. Double-check for data (Check-After-Set)
+        // This handles the race where Writer wrote *just* before we incremented.
         if self.peek_committed()? {
+            self.control.waiters_pending().fetch_sub(1, Ordering::SeqCst);
             return Ok(());
         }
-        futex_wait(self.control.notify_seq(), seq, timeout)
+
+        // 3. Sleep
+        let seq = self.control.notify_seq().load(Ordering::Acquire);
+        // Note: futex_wait internally handles the race if seq changes between load and syscall.
+        let _ = futex_wait(self.control.notify_seq(), seq, timeout);
+
+        // 4. Deregister
+        self.control.waiters_pending().fetch_sub(1, Ordering::SeqCst);
+
+        Ok(())
     }
 
     pub fn set_wait_strategy(&mut self, strategy: WaitStrategy) {
@@ -187,7 +213,7 @@ impl QueueReader {
         Ok(())
     }
 
-    fn peek_committed(&self) -> Result<bool> {
+    pub(crate) fn peek_committed(&self) -> Result<bool> {
         let last_possible = self.segment_size - HEADER_SIZE;
         if self.read_offset as usize > last_possible {
             return Ok(false);

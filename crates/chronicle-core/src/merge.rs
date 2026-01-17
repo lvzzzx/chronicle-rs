@@ -1,5 +1,6 @@
-use crate::reader::{MessageView, QueueReader};
+use crate::reader::{MessageView, QueueReader, WaitStrategy};
 use crate::{Error, Result};
+use std::time::{Duration, Instant};
 
 pub struct MergedMessage {
     pub source: usize,
@@ -12,6 +13,7 @@ pub struct MergedMessage {
 pub struct FanInReader {
     readers: Vec<QueueReader>,
     pending: Vec<Option<PendingMessage>>,
+    wait_strategy: WaitStrategy,
 }
 
 struct PendingMessage {
@@ -24,7 +26,57 @@ struct PendingMessage {
 impl FanInReader {
     pub fn new(readers: Vec<QueueReader>) -> Self {
         let pending = readers.iter().map(|_| None).collect();
-        Self { readers, pending }
+        Self {
+            readers,
+            pending,
+            wait_strategy: WaitStrategy::SpinThenPark { spin_us: 10 },
+        }
+    }
+
+    pub fn set_wait_strategy(&mut self, strategy: WaitStrategy) {
+        self.wait_strategy = strategy;
+    }
+
+    pub fn wait(&mut self) -> Result<()> {
+        match self.wait_strategy {
+            WaitStrategy::BusySpin => {
+                loop {
+                    if self.any_committed()? {
+                        return Ok(());
+                    }
+                    std::hint::spin_loop();
+                }
+            }
+            WaitStrategy::Sleep(duration) => {
+                if !self.any_committed()? {
+                    std::thread::sleep(duration);
+                }
+                Ok(())
+            }
+            WaitStrategy::SpinThenPark { spin_us } => {
+                let deadline = Instant::now() + Duration::from_micros(spin_us as u64);
+                while Instant::now() < deadline {
+                    if self.any_committed()? {
+                        return Ok(());
+                    }
+                    std::hint::spin_loop();
+                }
+                // Degraded Mode: We cannot park on N futexes without eventfd.
+                // Fallback to a short sleep (100us) to avoid 100% CPU burn.
+                // This is a trade-off: Saves CPU but adds latency floor.
+                std::thread::sleep(Duration::from_micros(100));
+                Ok(())
+            }
+        }
+    }
+
+    fn any_committed(&self) -> Result<bool> {
+        for reader in &self.readers {
+            if reader.peek_committed()? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn next(&mut self) -> Result<Option<MergedMessage>> {

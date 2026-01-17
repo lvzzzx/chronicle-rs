@@ -294,7 +294,11 @@ impl QueueWriter {
         self.control
             .notify_seq()
             .fetch_add(1, Ordering::Relaxed);
-        futex_wake(self.control.notify_seq())?;
+        
+        // Signal Suppression: Only syscall if someone is sleeping.
+        if self.control.waiters_pending().load(Ordering::Relaxed) > 0 {
+            futex_wake(self.control.notify_seq())?;
+        }
         Ok(())
     }
 
@@ -416,7 +420,11 @@ impl QueueWriter {
         self.control
             .notify_seq()
             .fetch_add(1, Ordering::Relaxed);
-        futex_wake(self.control.notify_seq())?;
+        
+        // Signal Suppression: Only syscall if someone is sleeping.
+        if self.control.waiters_pending().load(Ordering::Relaxed) > 0 {
+            futex_wake(self.control.notify_seq())?;
+        }
         Ok(())
     }
 }

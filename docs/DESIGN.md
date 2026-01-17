@@ -52,19 +52,21 @@ Guiding principle: chronicle-bus must remain a small utility layer. Anything tha
 
 ⸻
 
-3. Core Data Model
+## 3. Core Architecture
 
-3.1 Queue is an append-only log of records
+### 3.1 Storage Format
+*   **Segmented Files:** Data is split into fixed-size segments (e.g., 1GB).
+*   **Memory Mapping:** Readers/Writers `mmap` segments.
+*   **Zero-Copy:** Readers access `&[u8]` directly from the map.
+*   **Format:** `[Header 64B] [Payload ...]` aligned to 64 bytes.
 
-A queue is stored as segments (.q files) that are appended to sequentially. Each segment is mmap’d for writing and reading.
+### 3.2 Latency Model (Signal Suppression)
+To achieve ultra-low latency, we employ a "Signal Suppression" strategy using a "Waiter Flag + Check-After-Set" protocol.
+*   **Happy Path:** Zero system calls. Writer writes to memory; Reader polls memory.
+*   **Sleep Path:** Writer only syscalls (`futex_wake`) if `waiters_pending > 0`.
+*   See **[DESIGN-latency.md](./DESIGN-latency.md)** for the formal proof of correctness and implementation details.
 
-3.2 One writer per queue directory
-
-MVP enforces exactly one writer per queue directory using an OS file lock (Section 6.1). Multi-writer is intentionally avoided; scale writers linearly using one queue per writer and merge at the consumer (fan-in).
-
-3.3 Per-reader committed offsets
-
-Each reader has its own committed position persisted to /readers/<name>.meta. Readers do not contend with each other and can progress independently.
+### 3.3 Control Plane (chronicle-bus)
 
 ⸻
 

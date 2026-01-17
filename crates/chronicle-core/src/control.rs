@@ -6,7 +6,7 @@ use crate::mmap::MmapFile;
 use crate::{Error, Result};
 
 pub const CTRL_MAGIC: u32 = 0x4348_524E; // 'CHRN'
-pub const CTRL_VERSION: u32 = 2;
+pub const CTRL_VERSION: u32 = 3;
 
 #[repr(C, align(128))]
 pub struct ControlBlock {
@@ -27,8 +27,13 @@ pub struct ControlBlock {
     // Writer-hot.
     pub write_offset: AtomicU64,
     pub writer_heartbeat_ns: AtomicU64,
+    pub _pad3: [u8; 112],
+
+    // Coordination (Writer-Notify / Reader-Wait).
+    // Separated from write_offset to avoid false sharing when readers update waiters_pending.
     pub notify_seq: AtomicU32,
-    pub _pad3: [u8; 108],
+    pub waiters_pending: AtomicU32,
+    pub _pad4: [u8; 120],
 }
 
 pub struct ControlFile {
@@ -61,6 +66,8 @@ impl ControlFile {
         block.write_offset.store(write_offset, Ordering::Relaxed);
         block.writer_epoch.store(writer_epoch, Ordering::Relaxed);
         block.writer_heartbeat_ns.store(0, Ordering::Relaxed);
+        block.notify_seq.store(0, Ordering::Relaxed);
+        block.waiters_pending.store(0, Ordering::Relaxed);
         block.magic.store(CTRL_MAGIC, Ordering::Relaxed);
         block.init_state.store(2, Ordering::Release);
         std::fs::rename(tmp_path, path)?;
@@ -140,6 +147,10 @@ impl ControlFile {
 
     pub fn notify_seq(&self) -> &AtomicU32 {
         &self.block().notify_seq
+    }
+
+    pub fn waiters_pending(&self) -> &AtomicU32 {
+        &self.block().waiters_pending
     }
 
     pub fn writer_heartbeat_ns(&self) -> u64 {
