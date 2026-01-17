@@ -120,7 +120,7 @@ fn scan_ready_strategies(layout: &BusLayout) -> std::io::Result<HashSet<Strategy
                 if err.kind() == std::io::ErrorKind::NotFound {
                     continue;
                 }
-                return Err(err);
+                continue;
             }
         };
         if !file_type.is_dir() {
@@ -202,7 +202,7 @@ mod platform {
                     break;
                 }
                 saw_event = true;
-                if len as usize <= self.buffer.len() {
+                if (len as usize) < self.buffer.len() {
                     break;
                 }
             }

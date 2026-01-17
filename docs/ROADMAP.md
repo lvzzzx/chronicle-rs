@@ -11,7 +11,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Phase 4 (Event Notification) completed; ExecPlan in `execplans/phase-4-event-notification.md`.
 - Phase 5 (Segment Rolling & Retention) completed; ExecPlan in `execplans/phase-5-segment-rolling.md`.
 - Phase 6 (Multi-Queue Fan-In) completed; ExecPlan in `execplans/phase-6-multi-queue-fanin.md`.
-- Phase 7 (Queue Discovery) mostly complete in `crates/chronicle-bus/`; only `RouterDiscovery::poll()` needs filesystem watcher implementation.
+- Phase 7 (Queue Discovery) completed in `crates/chronicle-bus/` (scan + watch + dedup in `RouterDiscovery::poll()` with Linux inotify and periodic rescan fallback).
 - Phase 8 (Hardening & Benchmarks) completed; ExecPlan in `execplans/phase-8-hardening-benchmarks.md`.
 
 ## Phases
@@ -49,7 +49,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Deliverables: `BusLayout`, `StrategyEndpoints`, READY/LEASE markers, `RouterDiscovery` scan + watch, `ReaderRegistration` RAII cleanup.
 - Status:
   - **Complete**: `BusLayout`, `StrategyEndpoints`, `mark_ready()`, `write_lease()`, `ReaderRegistration` (RAII drop cleanup).
-  - **Pending**: `RouterDiscovery::poll()` returns stub—needs `readdir` scan + `inotify`/`kqueue` watcher.
+  - **Complete**: `RouterDiscovery::poll()` implements scan + watch (Linux inotify) with periodic rescan fallback.
 - Validation: router attaches/detaches queues dynamically without restart; handles create/delete races safely.
 
 ### Phase 8 — Hardening & Benchmarks (chronicle-core)
