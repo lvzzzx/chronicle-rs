@@ -20,12 +20,12 @@ Split the application into at least two threads:
 *   **Role:** Critical Path processing (Trading, Routing, Risk Checks).
 *   **Affinity:** Pinned to an isolated CPU core (`isolcpus`).
 *   **Constraints:**
-    *   **Zero Syscalls:** No `File` IO, no sockets (unless using kernel-bypass), no `sleep` (except optimized `futex_wait`).
-    *   **Zero Allocations:** No `Vec::push`, `String::new`. All memory pre-allocated.
-    *   **Exclusive Access:** Owns the `FanInReader` and `QueueWriter`.
+    *   **Minimal Syscalls:** Avoid `open`, `stat`, or `write` (logging) in the loop. `futex_wait` is permitted only when idle.
+    *   **Minimal Allocations:** Ideally zero, but note that the current `FanInReader` implementation performs heap allocations (`Vec<u8>`) for merged messages. A future zero-copy version is planned.
+    *   **Exclusive Access:** Owns the `FanInReader` and `QueueWriter` (passed by value).
 *   **Loop:**
     1.  Check **Command Channel** (non-blocking) for updates from Sidecar.
-    2.  Wait/Poll Data (`FanInReader::wait`).
+    2.  Wait/Poll Data (`FanInReader::wait`). This handles liveness heartbeats internally.
     3.  Process Data.
 
 #### 2. The Sidecar Thread (Background)
@@ -34,21 +34,23 @@ Split the application into at least two threads:
 *   **Responsibilities:**
     *   **Discovery:** Periodically scans directories for new streams/strategies.
     *   **Setup:** Opens files, maps memory, verifies headers (Heavy lifting).
-    *   **Handoff:** Passes fully initialized objects (`QueueReader`) to the Hot Thread.
+    *   **Handoff:** Passes **ownership** of the fully initialized `QueueReader` to the Hot Thread.
     *   **Logging:** Drains a lock-free log ring buffer from the Hot Thread and writes to disk/network.
 
 ### Implementation Reference
 
 ```rust
 // Shared Channel: Sidecar -> Hot
+// Note: QueueReader is Send, so we can move it across threads.
 let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(16);
 
 // --- Thread 2: Sidecar (Control Plane) ---
 thread::spawn(move || {
     loop {
         // Heavy IO operation
-        if let Ok(new_reader) = Queue::open_subscriber("/path/to/new/stream") {
-            // Handoff: Send fully ready object
+        // API Note: Requires reader name
+        if let Ok(new_reader) = Queue::open_subscriber("/path/to/new/stream", "my_router") {
+            // Handoff: Send fully ready object (Ownership Transfer)
             let _ = cmd_tx.send(Command::AddReader(new_reader));
         }
         thread::sleep(Duration::from_secs(1));
@@ -66,9 +68,11 @@ loop {
         }
     }
 
-    // 2. Critical Path (Zero Syscall)
-    fanin.wait(); // BusySpin or Hybrid
+    // 2. Critical Path
+    // wait() internally updates heartbeats to keep readers live.
+    fanin.wait(); 
     while let Some(msg) = fanin.next() {
+        // Warning: msg.payload is currently a Vec<u8> (allocation)
         process(msg);
     }
 }
