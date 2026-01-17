@@ -107,15 +107,11 @@ impl ControlFile {
         self.block().segment_size.load(Ordering::Acquire)
     }
 
-    pub fn set_current_segment(&self, segment: u32) {
-        self.block().current_segment.store(segment, Ordering::Release);
-    }
-
     pub fn write_offset(&self) -> u64 {
         self.block().write_offset.load(Ordering::Acquire)
     }
 
-    pub fn set_write_offset(&self, offset: u64) {
+    pub(crate) fn set_write_offset(&self, offset: u64) {
         self.block().write_offset.store(offset, Ordering::Release);
     }
 

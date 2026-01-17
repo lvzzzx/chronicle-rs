@@ -19,6 +19,60 @@ const INDEX_FILE: &str = "index.meta";
 const CONTROL_FILE: &str = "control.meta";
 const WRITER_LOCK_FILE: &str = "writer.lock";
 const BACKPRESSURE_POLL_US: u64 = 100;
+const RETENTION_CHECK_INTERVAL_MS: u64 = 10;
+const RETENTION_CHECK_BYTES: u64 = 1024 * 1024;
+
+// Avoid scanning reader metadata on every append; refresh on coarse thresholds.
+struct RetentionCache {
+    min_pos: u64,
+    last_head: u64,
+    last_check: Instant,
+    valid: bool,
+    check_interval: Duration,
+    check_bytes: u64,
+}
+
+impl RetentionCache {
+    fn new(check_interval: Duration, check_bytes: u64) -> Self {
+        Self {
+            min_pos: 0,
+            last_head: 0,
+            last_check: Instant::now(),
+            valid: false,
+            check_interval,
+            check_bytes,
+        }
+    }
+
+    fn min_pos(
+        &mut self,
+        path: &Path,
+        head_segment: u64,
+        head_offset: u64,
+        segment_size: u64,
+    ) -> Result<u64> {
+        let head = head_segment
+            .saturating_mul(segment_size)
+            .saturating_add(head_offset);
+        let now = Instant::now();
+        if !self.valid
+            || now.duration_since(self.last_check) >= self.check_interval
+            || head.saturating_sub(self.last_head) >= self.check_bytes
+        {
+            let min_pos = crate::retention::min_live_reader_position(
+                path,
+                head_segment,
+                head_offset,
+                segment_size,
+            )?;
+            self.min_pos = min_pos;
+            self.last_head = head;
+            self.last_check = now;
+            self.valid = true;
+        }
+        Ok(self.min_pos)
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum BackpressurePolicy {
@@ -32,6 +86,8 @@ pub struct WriterConfig {
     pub max_bytes: Option<u64>,
     pub backpressure: BackpressurePolicy,
     pub segment_size_bytes: u64,
+    pub retention_check_interval: Duration,
+    pub retention_check_bytes: u64,
 }
 
 impl Default for WriterConfig {
@@ -41,6 +97,8 @@ impl Default for WriterConfig {
             max_bytes: None,
             backpressure: BackpressurePolicy::FailFast,
             segment_size_bytes: DEFAULT_SEGMENT_SIZE as u64,
+            retention_check_interval: Duration::from_millis(RETENTION_CHECK_INTERVAL_MS),
+            retention_check_bytes: RETENTION_CHECK_BYTES,
         }
     }
 }
@@ -55,6 +113,8 @@ impl WriterConfig {
                 poll_interval: Duration::from_micros(BACKPRESSURE_POLL_US),
             },
             segment_size_bytes: DEFAULT_SEGMENT_SIZE as u64,
+            retention_check_interval: Duration::from_millis(RETENTION_CHECK_INTERVAL_MS),
+            retention_check_bytes: RETENTION_CHECK_BYTES,
         }
     }
 }
@@ -70,6 +130,7 @@ pub struct QueueWriter {
     seq: u64,
     config: WriterConfig,
     segment_size: usize,
+    retention_cache: RetentionCache,
     _lock: WriterLock,
 }
 
@@ -163,6 +224,7 @@ impl Queue {
             seq: 0,
             config,
             segment_size,
+            retention_cache: RetentionCache::new(config.retention_check_interval, config.retention_check_bytes),
             _lock: lock,
         })
     }
@@ -251,7 +313,7 @@ impl QueueWriter {
                 return Ok(());
             }
 
-            let _ = crate::retention::cleanup_segments(
+            crate::retention::cleanup_segments(
                 &self.path,
                 self.segment_id as u64,
                 self.write_offset,
@@ -279,10 +341,10 @@ impl QueueWriter {
         }
     }
 
-    fn has_capacity(&self, record_len: usize) -> Result<bool> {
+    fn has_capacity(&mut self, record_len: usize) -> Result<bool> {
         let head_segment = self.segment_id as u64;
         let head_offset = self.write_offset;
-        let min_pos = crate::retention::min_live_reader_position(
+        let min_pos = self.retention_cache.min_pos(
             &self.path,
             head_segment,
             head_offset,
