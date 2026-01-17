@@ -71,6 +71,38 @@ impl MmapFile {
         self.len
     }
 
+    pub fn lock(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let ptr = self.map.as_ptr() as *const libc::c_void;
+            let rc = unsafe { libc::mlock(ptr, self.len) };
+            if rc != 0 {
+                return Err(Error::Io(std::io::Error::last_os_error()));
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(Error::Unsupported("mlock is only supported on linux"))
+        }
+    }
+
+    pub fn unlock(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let ptr = self.map.as_ptr() as *const libc::c_void;
+            let rc = unsafe { libc::munlock(ptr, self.len) };
+            if rc != 0 {
+                return Err(Error::Io(std::io::Error::last_os_error()));
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(Error::Unsupported("mlock is only supported on linux"))
+        }
+    }
+
     pub fn sync(&self) -> Result<()> {
         self.file.sync_all()?;
         Ok(())

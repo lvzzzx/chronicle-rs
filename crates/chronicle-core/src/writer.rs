@@ -101,6 +101,8 @@ pub struct WriterConfig {
     pub prealloc_wait: Duration,
     // If true, roll errors when no preallocated segment is ready after prealloc_wait.
     pub require_prealloc: bool,
+    // Lock control + active segment pages in RAM (requires CAP_IPC_LOCK or high memlock rlimit).
+    pub memlock: bool,
 }
 
 impl Default for WriterConfig {
@@ -115,6 +117,7 @@ impl Default for WriterConfig {
             defer_seal_sync: false,
             prealloc_wait: Duration::from_micros(0),
             require_prealloc: false,
+            memlock: false,
         }
     }
 }
@@ -134,6 +137,7 @@ impl WriterConfig {
             defer_seal_sync: false,
             prealloc_wait: Duration::from_micros(0),
             require_prealloc: false,
+            memlock: false,
         }
     }
 
@@ -142,6 +146,7 @@ impl WriterConfig {
             defer_seal_sync: true,
             prealloc_wait: Duration::from_millis(1),
             require_prealloc: true,
+            memlock: true,
             ..Self::default()
         }
     }
@@ -159,10 +164,11 @@ struct PreallocWorker {
     desired: Arc<AtomicU64>,
     ready: mpsc::Receiver<PreparedSegment>,
     errors: Arc<AtomicU64>,
+    memlock: bool,
 }
 
 impl PreallocWorker {
-    fn new(root: PathBuf, segment_size: usize) -> Result<Self> {
+    fn new(root: PathBuf, segment_size: usize, memlock: bool) -> Result<Self> {
         let (wakeup_tx, wakeup_rx) = mpsc::sync_channel(PREALLOC_QUEUE_DEPTH);
         let (ready_tx, ready_rx) = mpsc::sync_channel(PREALLOC_QUEUE_DEPTH);
         let errors = Arc::new(AtomicU64::new(0));
@@ -189,6 +195,13 @@ impl PreallocWorker {
                         }
                     };
                     if publish_segment(&temp_path, &segment_path(&root, next_segment_id)).is_ok() {
+                        if memlock {
+                            if mmap.lock().is_err() {
+                                errors_handle.fetch_add(1, Ordering::Relaxed);
+                                thread::sleep(Duration::from_millis(10));
+                                continue;
+                            }
+                        }
                         if ready_tx
                             .send(PreparedSegment {
                                 segment_id: next_segment_id,
@@ -211,6 +224,7 @@ impl PreallocWorker {
             desired,
             ready: ready_rx,
             errors,
+            memlock,
         })
     }
 
@@ -387,12 +401,16 @@ impl Queue {
 
         control.set_segment_index(segment_id, write_offset);
 
-        let prealloc = PreallocWorker::new(path.clone(), segment_size)?;
+        let prealloc = PreallocWorker::new(path.clone(), segment_size, config.memlock)?;
         let async_sealer = if config.defer_seal_sync {
             Some(AsyncSealer::new()?)
         } else {
             None
         };
+        if config.memlock {
+            control.lock()?;
+            mmap.lock()?;
+        }
         let writer = QueueWriter {
             path,
             control,
@@ -656,7 +674,7 @@ impl QueueWriter {
 
     fn roll_segment(&mut self) -> Result<()> {
         let next_segment = self.segment_id + 1;
-        let new_mmap = if let Some(prepared) = self.acquire_preallocated(next_segment as u64)? {
+        let mut new_mmap = if let Some(prepared) = self.acquire_preallocated(next_segment as u64)? {
             let header = read_segment_header(&prepared)?;
             if header.segment_id != next_segment {
                 return Err(Error::Corrupt("preallocated segment id mismatch"));
@@ -665,6 +683,9 @@ impl QueueWriter {
         } else {
             open_or_create_segment(&self.path, next_segment as u64, self.segment_size)?
         };
+        if self.config.memlock {
+            new_mmap.lock()?;
+        }
 
         self.control
             .set_segment_index(next_segment, SEG_DATA_OFFSET as u64);

@@ -83,6 +83,10 @@ impl ControlFile {
         Ok(Self { _mmap: mmap, ptr })
     }
 
+    pub fn lock(&self) -> Result<()> {
+        self._mmap.lock()
+    }
+
     pub fn wait_ready(&self) -> Result<()> {
         let block = self.block();
         loop {

@@ -45,6 +45,17 @@ pub enum WaitStrategy {
     Sleep(Duration),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ReaderConfig {
+    pub memlock: bool,
+}
+
+impl Default for ReaderConfig {
+    fn default() -> Self {
+        Self { memlock: false }
+    }
+}
+
 pub struct QueueReader {
     path: PathBuf,
     control: ControlFile,
@@ -55,10 +66,19 @@ pub struct QueueReader {
     meta: ReaderMeta,
     wait_strategy: WaitStrategy,
     segment_size: usize,
+    memlock: bool,
 }
 
 impl Queue {
     pub fn open_subscriber(path: impl AsRef<std::path::Path>, reader: &str) -> Result<QueueReader> {
+        Self::open_subscriber_with_config(path, reader, ReaderConfig::default())
+    }
+
+    pub fn open_subscriber_with_config(
+        path: impl AsRef<std::path::Path>,
+        reader: &str,
+        config: ReaderConfig,
+    ) -> Result<QueueReader> {
         if reader.is_empty() {
             return Err(Error::Unsupported("reader name cannot be empty"));
         }
@@ -83,6 +103,10 @@ impl Queue {
             return Err(Error::Corrupt("reader segment missing"));
         }
         let mmap = open_segment(&path, meta.segment_id, segment_size)?;
+        if config.memlock {
+            control.lock()?;
+            mmap.lock()?;
+        }
 
         Ok(QueueReader {
             path,
@@ -96,6 +120,7 @@ impl Queue {
                 spin_us: DEFAULT_SPIN_US,
             },
             segment_size,
+            memlock: config.memlock,
         })
     }
 }
@@ -279,7 +304,11 @@ impl QueueReader {
             }
             crate::segment::repair_unsealed_tail(&mut self.mmap, self.segment_size)?;
         }
-        self.mmap = open_segment(&self.path, next_segment as u64, self.segment_size)?;
+        let mmap = open_segment(&self.path, next_segment as u64, self.segment_size)?;
+        if self.memlock {
+            mmap.lock()?;
+        }
+        self.mmap = mmap;
         self.segment_id = next_segment;
         self.read_offset = SEG_DATA_OFFSET as u64;
         Ok(true)
