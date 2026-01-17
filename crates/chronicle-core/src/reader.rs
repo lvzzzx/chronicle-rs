@@ -182,22 +182,24 @@ impl QueueReader {
         // 1. Register presence (SeqCst to ensure visibility before check)
         self.control.waiters_pending().fetch_add(1, Ordering::SeqCst);
 
-        // 2. Double-check for data (Check-After-Set)
+        // 2. Load seq before the check-after-set to avoid missing a wake.
+        let seq = self.control.notify_seq().load(Ordering::Acquire);
+
+        // 3. Double-check for data (Check-After-Set).
         // This handles the race where Writer wrote *just* before we incremented.
         if self.peek_committed()? {
             self.control.waiters_pending().fetch_sub(1, Ordering::SeqCst);
             return Ok(());
         }
 
-        // 3. Sleep
-        let seq = self.control.notify_seq().load(Ordering::Acquire);
+        // 4. Sleep
         // Note: futex_wait internally handles the race if seq changes between load and syscall.
-        let _ = futex_wait(self.control.notify_seq(), seq, timeout);
+        let res = futex_wait(self.control.notify_seq(), seq, timeout);
 
-        // 4. Deregister
+        // 5. Deregister
         self.control.waiters_pending().fetch_sub(1, Ordering::SeqCst);
 
-        Ok(())
+        res
     }
 
     pub fn set_wait_strategy(&mut self, strategy: WaitStrategy) {
