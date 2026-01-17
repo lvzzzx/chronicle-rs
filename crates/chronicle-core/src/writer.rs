@@ -95,7 +95,7 @@ pub struct WriterConfig {
     pub segment_size_bytes: u64,
     pub retention_check_interval: Duration,
     pub retention_check_bytes: u64,
-    // Offload segment sync to a background thread on roll (lower latency, weaker crash durability).
+    // Offload segment sync to a background thread on roll (lower latency, not durable to power loss).
     pub defer_seal_sync: bool,
     // Spin-wait budget for a preallocated next segment during roll.
     pub prealloc_wait: Duration,
@@ -184,6 +184,7 @@ impl PreallocWorker {
                         Err(_) => {
                             let _ = std::fs::remove_file(&temp_path);
                             errors_handle.fetch_add(1, Ordering::Relaxed);
+                            thread::sleep(Duration::from_millis(10));
                             continue;
                         }
                     };
@@ -200,6 +201,7 @@ impl PreallocWorker {
                     } else {
                         let _ = std::fs::remove_file(&temp_path);
                         errors_handle.fetch_add(1, Ordering::Relaxed);
+                        thread::sleep(Duration::from_millis(10));
                     }
                 }
             })
@@ -532,10 +534,10 @@ impl QueueWriter {
 
         self.control
             .notify_seq()
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::SeqCst);
         
         // Signal Suppression: Only syscall if someone is sleeping.
-        if self.control.waiters_pending().load(Ordering::Relaxed) > 0 {
+        if self.control.waiters_pending().load(Ordering::SeqCst) > 0 {
             futex_wake(self.control.notify_seq())?;
         }
         Ok(())
@@ -686,10 +688,10 @@ impl QueueWriter {
 
         self.control
             .notify_seq()
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::SeqCst);
         
         // Signal Suppression: Only syscall if someone is sleeping.
-        if self.control.waiters_pending().load(Ordering::Relaxed) > 0 {
+        if self.control.waiters_pending().load(Ordering::SeqCst) > 0 {
             futex_wake(self.control.notify_seq())?;
         }
         self.trigger_preallocation(next_segment as u64 + 1);
