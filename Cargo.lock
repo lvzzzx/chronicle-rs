@@ -58,6 +58,7 @@ name = "chronicle-bus"
 version = "0.1.0"
 dependencies = [
  "chronicle-core",
+ "libc",
 ]
 
 [[package]]
