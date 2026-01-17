@@ -27,8 +27,10 @@ fn bench_roll_latency(_c: &mut Criterion) {
     let mut writer = Queue::open_publisher_with_config(&path, config).expect("writer");
     let mut reader = Queue::open_subscriber(&path, "bench_reader").expect("reader");
     
-    // Use hybrid strategy for realistic measurement
-    reader.set_wait_strategy(WaitStrategy::SpinThenPark { spin_us: 10 });
+    // Use BusySpin to avoid futex wake/scheduling jitter during roll latency measurement.
+    reader.set_wait_strategy(WaitStrategy::BusySpin);
+    // Allow prealloc worker to start and prepare the next segment before the first roll.
+    std::thread::sleep(Duration::from_millis(10));
 
     let mut payload = vec![0u8; MSG_SIZE];
     let mut latencies = Vec::with_capacity(TOTAL_MSGS);
