@@ -47,7 +47,7 @@ fn merge_orders_by_timestamp_and_source() {
     let mut seen = Vec::new();
 
     while let Some(message) = fanin.next().expect("fanin next") {
-        seen.push((message.source, message.timestamp_ns, message.payload));
+        seen.push((message.source, message.timestamp_ns, message.payload.to_vec()));
     }
 
     assert_eq!(

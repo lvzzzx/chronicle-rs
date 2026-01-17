@@ -1,13 +1,13 @@
-use crate::reader::{MessageView, QueueReader, WaitStrategy};
+use crate::reader::{MessageRef, QueueReader, WaitStrategy};
 use crate::{Error, Result};
 use std::time::{Duration, Instant};
 
-pub struct MergedMessage {
+pub struct MergedMessage<'a> {
     pub source: usize,
     pub seq: u64,
     pub timestamp_ns: u64,
     pub type_id: u16,
-    pub payload: Vec<u8>,
+    pub payload: &'a [u8],
 }
 
 pub struct FanInReader {
@@ -20,7 +20,8 @@ struct PendingMessage {
     seq: u64,
     timestamp_ns: u64,
     type_id: u16,
-    payload: Vec<u8>,
+    payload_offset: usize,
+    payload_len: usize,
 }
 
 impl FanInReader {
@@ -84,11 +85,11 @@ impl FanInReader {
         Ok(false)
     }
 
-    pub fn next(&mut self) -> Result<Option<MergedMessage>> {
+    pub fn next(&mut self) -> Result<Option<MergedMessage<'_>>> {
         for (index, reader) in self.readers.iter_mut().enumerate() {
             if self.pending[index].is_none() {
-                if let Some(view) = reader.next()? {
-                    self.pending[index] = Some(PendingMessage::from_view(view));
+                if let Some(message) = reader.next_ref()? {
+                    self.pending[index] = Some(PendingMessage::from_ref(message));
                 }
             }
         }
@@ -117,12 +118,14 @@ impl FanInReader {
         let message = self.pending[source]
             .take()
             .ok_or(Error::Corrupt("pending message missing"))?;
+        let payload = self.readers[source]
+            .payload_at(message.payload_offset, message.payload_len)?;
         Ok(Some(MergedMessage {
             source,
             seq: message.seq,
             timestamp_ns: message.timestamp_ns,
             type_id: message.type_id,
-            payload: message.payload,
+            payload,
         }))
     }
 
@@ -136,12 +139,13 @@ impl FanInReader {
 }
 
 impl PendingMessage {
-    fn from_view(view: MessageView<'_>) -> Self {
+    fn from_ref(message: MessageRef) -> Self {
         Self {
-            seq: view.seq,
-            timestamp_ns: view.timestamp_ns,
-            type_id: view.type_id,
-            payload: view.payload.to_vec(),
+            seq: message.seq,
+            timestamp_ns: message.timestamp_ns,
+            type_id: message.type_id,
+            payload_offset: message.payload_offset,
+            payload_len: message.payload_len,
         }
     }
 }

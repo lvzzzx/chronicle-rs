@@ -28,6 +28,14 @@ pub struct MessageView<'a> {
     pub payload: &'a [u8],
 }
 
+pub(crate) struct MessageRef {
+    pub seq: u64,
+    pub timestamp_ns: u64,
+    pub type_id: u16,
+    pub payload_offset: usize,
+    pub payload_len: usize,
+}
+
 pub enum WaitStrategy {
     /// True busy-spinning. Burns 100% CPU on a single core for maximum responsiveness.
     BusySpin,
@@ -94,56 +102,16 @@ impl Queue {
 
 impl QueueReader {
     pub fn next(&mut self) -> Result<Option<MessageView<'_>>> {
-        let last_possible = (self.segment_size - HEADER_SIZE) as u64;
-        loop {
-            if self.read_offset > last_possible {
-                if self.advance_segment()? {
-                    continue;
-                }
-                return Ok(None);
-            }
-
-            let offset = self.read_offset as usize;
-            let commit = MessageHeader::load_commit_len(&self.mmap.as_slice()[offset] as *const u8);
-            if commit == 0 {
-                if self.advance_segment()? {
-                    continue;
-                }
-                return Ok(None);
-            }
-
-            let payload_len = MessageHeader::payload_len_from_commit(commit)?;
-            if payload_len > MAX_PAYLOAD_LEN {
-                return Err(Error::Corrupt("payload length exceeds max"));
-            }
-            let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
-            if offset + record_len > self.segment_size {
-                return Err(Error::Corrupt("record length out of bounds"));
-            }
-
-            let mut header_buf = [0u8; 64];
-            header_buf.copy_from_slice(&self.mmap.as_slice()[offset..offset + HEADER_SIZE]);
-            let header = MessageHeader::from_bytes(&header_buf)?;
-            self.read_offset = self
-                .read_offset
-                .checked_add(record_len as u64)
-                .ok_or(Error::Corrupt("read offset overflow"))?;
-
-            let payload_start = offset + HEADER_SIZE;
-            let payload_ptr = unsafe { self.mmap.as_slice().as_ptr().add(payload_start) };
-            let payload = unsafe { std::slice::from_raw_parts(payload_ptr, payload_len) };
-
-            if header.type_id == PAD_TYPE_ID {
-                continue;
-            }
-            header.validate_crc(payload)?;
-            return Ok(Some(MessageView {
-                seq: header.seq,
-                timestamp_ns: header.timestamp_ns,
-                type_id: header.type_id,
-                payload,
-            }));
-        }
+        let Some(message) = self.next_ref()? else {
+            return Ok(None);
+        };
+        let payload = self.payload_at(message.payload_offset, message.payload_len)?;
+        Ok(Some(MessageView {
+            seq: message.seq,
+            timestamp_ns: message.timestamp_ns,
+            type_id: message.type_id,
+            payload,
+        }))
     }
 
     pub fn commit(&mut self) -> Result<()> {
@@ -206,6 +174,59 @@ impl QueueReader {
         self.wait_strategy = strategy;
     }
 
+    pub(crate) fn next_ref(&mut self) -> Result<Option<MessageRef>> {
+        let last_possible = (self.segment_size - HEADER_SIZE) as u64;
+        loop {
+            if self.read_offset > last_possible {
+                if self.advance_segment()? {
+                    continue;
+                }
+                return Ok(None);
+            }
+
+            let offset = self.read_offset as usize;
+            let commit = MessageHeader::load_commit_len(&self.mmap.as_slice()[offset] as *const u8);
+            if commit == 0 {
+                if self.advance_segment()? {
+                    continue;
+                }
+                return Ok(None);
+            }
+
+            let payload_len = MessageHeader::payload_len_from_commit(commit)?;
+            if payload_len > MAX_PAYLOAD_LEN {
+                return Err(Error::Corrupt("payload length exceeds max"));
+            }
+            let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
+            if offset + record_len > self.segment_size {
+                return Err(Error::Corrupt("record length out of bounds"));
+            }
+
+            let mut header_buf = [0u8; 64];
+            header_buf.copy_from_slice(&self.mmap.as_slice()[offset..offset + HEADER_SIZE]);
+            let header = MessageHeader::from_bytes(&header_buf)?;
+            self.read_offset = self
+                .read_offset
+                .checked_add(record_len as u64)
+                .ok_or(Error::Corrupt("read offset overflow"))?;
+
+            let payload_start = offset + HEADER_SIZE;
+            let payload = self.payload_at(payload_start, payload_len)?;
+
+            if header.type_id == PAD_TYPE_ID {
+                continue;
+            }
+            header.validate_crc(payload)?;
+            return Ok(Some(MessageRef {
+                seq: header.seq,
+                timestamp_ns: header.timestamp_ns,
+                type_id: header.type_id,
+                payload_offset: payload_start,
+                payload_len,
+            }));
+        }
+    }
+
     fn maybe_heartbeat(&mut self) -> Result<()> {
         let now = now_ns()?;
         if now.saturating_sub(self.meta.last_heartbeat_ns) > 1_000_000_000 {
@@ -223,6 +244,16 @@ impl QueueReader {
         let offset = self.read_offset as usize;
         let commit = MessageHeader::load_commit_len(&self.mmap.as_slice()[offset] as *const u8);
         Ok(commit > 0)
+    }
+
+    pub(crate) fn payload_at(&self, offset: usize, len: usize) -> Result<&[u8]> {
+        let end = offset
+            .checked_add(len)
+            .ok_or(Error::Corrupt("payload offset overflow"))?;
+        self.mmap
+            .as_slice()
+            .get(offset..end)
+            .ok_or(Error::Corrupt("payload out of bounds"))
     }
 
     fn advance_segment(&mut self) -> Result<bool> {
