@@ -6,7 +6,7 @@ use crate::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, PAD_TYPE_ID, RE
 use crate::mmap::MmapFile;
 use crate::{Error, Result};
 
-pub const SEGMENT_SIZE: usize = 1_048_576;
+pub const DEFAULT_SEGMENT_SIZE: usize = 128 * 1024 * 1024;
 pub const SEG_HEADER_SIZE: usize = 64;
 pub const SEG_DATA_OFFSET: usize = 64;
 pub const SEG_MAGIC: u32 = 0x53454730; // 'SEG0'
@@ -77,10 +77,10 @@ pub fn segment_path(root: &Path, id: u64) -> PathBuf {
     root.join(segment_filename(id))
 }
 
-pub fn open_segment(root: &Path, id: u64) -> Result<MmapFile> {
+pub fn open_segment(root: &Path, id: u64, segment_size: usize) -> Result<MmapFile> {
     let path = segment_path(root, id);
     let mmap = MmapFile::open(&path)?;
-    if mmap.len() != SEGMENT_SIZE {
+    if mmap.len() != segment_size {
         return Err(Error::Corrupt("segment size mismatch"));
     }
     let header = read_segment_header(&mmap)?;
@@ -90,11 +90,21 @@ pub fn open_segment(root: &Path, id: u64) -> Result<MmapFile> {
     Ok(mmap)
 }
 
-pub fn create_segment(root: &Path, id: u64) -> Result<MmapFile> {
+pub fn create_segment(root: &Path, id: u64, segment_size: usize) -> Result<MmapFile> {
     let path = segment_path(root, id);
-    let mut mmap = MmapFile::create(&path, SEGMENT_SIZE)?;
+    let mut mmap = MmapFile::create(&path, segment_size)?;
     write_segment_header(&mut mmap, id as u32, 0)?;
     Ok(mmap)
+}
+
+pub fn validate_segment_size(segment_size: u64) -> Result<usize> {
+    let size = usize::try_from(segment_size)
+        .map_err(|_| Error::Unsupported("segment size exceeds addressable range"))?;
+    let min_size = SEG_DATA_OFFSET + HEADER_SIZE;
+    if size < min_size {
+        return Err(Error::Unsupported("segment size too small"));
+    }
+    Ok(size)
 }
 
 pub fn load_index(path: &Path) -> Result<SegmentIndex> {
@@ -223,7 +233,7 @@ pub fn seal_segment(mmap: &mut MmapFile) -> Result<()> {
     Ok(())
 }
 
-pub fn repair_unsealed_tail(mmap: &mut MmapFile) -> Result<()> {
+pub fn repair_unsealed_tail(mmap: &mut MmapFile, segment_size: usize) -> Result<()> {
     let header = read_segment_header(mmap)?;
     if (header.flags & SEG_FLAG_SEALED) != 0 {
         return Ok(());
@@ -231,7 +241,7 @@ pub fn repair_unsealed_tail(mmap: &mut MmapFile) -> Result<()> {
 
     let mut end_offset = SEG_DATA_OFFSET;
     let mut offset = SEG_DATA_OFFSET;
-    while offset + HEADER_SIZE <= SEGMENT_SIZE {
+    while offset + HEADER_SIZE <= segment_size {
         let commit = MessageHeader::load_commit_len(&mmap.as_slice()[offset] as *const u8);
         if commit == 0 {
             end_offset = offset;
@@ -249,7 +259,7 @@ pub fn repair_unsealed_tail(mmap: &mut MmapFile) -> Result<()> {
             break;
         }
         let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
-        if offset + record_len > SEGMENT_SIZE {
+        if offset + record_len > segment_size {
             end_offset = offset;
             break;
         }
@@ -257,8 +267,8 @@ pub fn repair_unsealed_tail(mmap: &mut MmapFile) -> Result<()> {
         end_offset = offset;
     }
 
-    if end_offset + HEADER_SIZE <= SEGMENT_SIZE {
-        let remaining = SEGMENT_SIZE - end_offset;
+    if end_offset + HEADER_SIZE <= segment_size {
+        let remaining = segment_size - end_offset;
         if remaining >= HEADER_SIZE {
             let payload_len = remaining - HEADER_SIZE;
             let commit_len = MessageHeader::commit_len_for_payload(payload_len)?;

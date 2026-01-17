@@ -184,9 +184,9 @@ Standard deployment structure (configurable root):
 ```
 
 ### Tuning Parameters
-While most defaults are sane, you can tune `chronicle-core` constants if building from source:
+While most defaults are sane, you can tune `chronicle-core` behavior via config:
 *   `SPIN_US`: Microseconds to busy-loop before sleeping (default: `10us`).
-*   `SEGMENT_SIZE`: Size of queue files (default: `128MB` or `1GB`).
+*   `WriterConfig.segment_size_bytes`: Size of queue files (default: `128MiB`). Stored in `control.meta` and used by all readers/writers for an existing queue.
 
 ---
 

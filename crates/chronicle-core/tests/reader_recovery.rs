@@ -1,12 +1,21 @@
-use chronicle_core::Queue;
+use chronicle_core::{Queue, WriterConfig};
 use tempfile::tempdir;
+
+const TEST_SEGMENT_SIZE: usize = 1 * 1024 * 1024;
 
 #[test]
 fn read_commit_and_recover() {
     let dir = tempdir().expect("tempdir");
     let queue_path = dir.path().join("orders");
 
-    let mut writer = Queue::open_publisher(&queue_path).expect("queue open");
+    let mut writer = Queue::open_publisher_with_config(
+        &queue_path,
+        WriterConfig {
+            segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            ..WriterConfig::default()
+        },
+    )
+    .expect("queue open");
 
     let payload_a = b"alpha";
     let payload_b = b"bravo";

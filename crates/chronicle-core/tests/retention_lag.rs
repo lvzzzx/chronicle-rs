@@ -1,7 +1,11 @@
 use chronicle_core::retention::cleanup_segments;
-use chronicle_core::segment::{create_segment, store_reader_meta, ReaderMeta, SEGMENT_SIZE, SEG_DATA_OFFSET};
+use chronicle_core::segment::{
+    create_segment, store_reader_meta, ReaderMeta, SEG_DATA_OFFSET,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
+
+const TEST_SEGMENT_SIZE: usize = 1 * 1024 * 1024;
 
 #[test]
 fn retention_ignores_lagging_reader() {
@@ -9,8 +13,8 @@ fn retention_ignores_lagging_reader() {
     let queue_path = dir.path().join("orders");
     std::fs::create_dir_all(&queue_path).expect("queue dir");
 
-    create_segment(&queue_path, 0).expect("segment 0");
-    create_segment(&queue_path, 1).expect("segment 1");
+    create_segment(&queue_path, 0, TEST_SEGMENT_SIZE).expect("segment 0");
+    create_segment(&queue_path, 1, TEST_SEGMENT_SIZE).expect("segment 1");
 
     let readers_dir = queue_path.join("readers");
     std::fs::create_dir_all(&readers_dir).expect("readers dir");
@@ -22,8 +26,9 @@ fn retention_ignores_lagging_reader() {
     let mut meta = ReaderMeta::new(0, SEG_DATA_OFFSET as u64, now_ns, 0);
     store_reader_meta(&meta_path, &mut meta).expect("store meta");
 
-    let head_segment = (10_u64 * 1024 * 1024 * 1024 / SEGMENT_SIZE as u64) + 2;
-    let deleted = cleanup_segments(&queue_path, head_segment, 0).expect("cleanup");
+    let head_segment = (10_u64 * 1024 * 1024 * 1024 / TEST_SEGMENT_SIZE as u64) + 2;
+    let deleted = cleanup_segments(&queue_path, head_segment, 0, TEST_SEGMENT_SIZE as u64)
+        .expect("cleanup");
 
     assert!(deleted.contains(&0));
     assert!(deleted.contains(&1));

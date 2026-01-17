@@ -175,7 +175,7 @@ Each queue directory contains a small shared-mapped control.meta file:
 use core::sync::atomic::{AtomicU32, AtomicU64};
 
 const CTRL_MAGIC: u32 = 0x4348524E; // 'CHRN'
-const CTRL_VERSION: u32 = 1;
+const CTRL_VERSION: u32 = 2;
 
 #[repr(C, align(128))]
 struct ControlBlock {
@@ -183,18 +183,24 @@ struct ControlBlock {
     magic: AtomicU32,       // CTRL_MAGIC when initialized
     version: AtomicU32,     // CTRL_VERSION
     init_state: AtomicU32,  // 0=uninit, 1=initializing, 2=ready
+    _pad0: [u8; 4],
     writer_epoch: AtomicU64, // increments on writer restart (optional)
-    _pad1: [u8; 108],       // pad to 128 bytes
+    segment_size: AtomicU64, // bytes per segment file
+    _pad1: [u8; 96],       // pad to 128 bytes
 
     // Reader-hot, rarely written (separate cache line).
+    segment_gen: AtomicU32,   // seqlock for (current_segment, write_offset)
     current_segment: AtomicU32,
-    _pad2: [u8; 124],       // pad to 128 bytes
+    _pad2: [u8; 120],       // pad to 128 bytes
 
     // Writer-hot (frequently written).
     write_offset: AtomicU64, // writer position within current segment (resets on roll)
+    writer_heartbeat_ns: AtomicU64,
     notify_seq: AtomicU32,   // futex wait/wake target (queue-level)
-    _pad3: [u8; 116],       // pad to 128 bytes
+    _pad3: [u8; 108],       // pad to 128 bytes
 }
+
+Segment size is stored in control.meta and is the single source of truth for queue geometry. Readers and writers must load it from the control block and ignore local defaults for existing queues. The segment_gen field is a seqlock generation counter used to publish a consistent (current_segment, write_offset) pair; readers should read it before/after and retry if it changes or is odd.
 
 5.3 Initialization protocol (atomic and safe)
 
@@ -203,7 +209,7 @@ To avoid readers mapping partially initialized control blocks:
 Publisher creates atomically:
 	1.	Create control.meta.tmp, set file size
 	2.	mmap and set init_state = 1 (initializing)
-	3.	Initialize fields: version, current_segment, write_offset, writer_epoch
+	3.	Initialize fields: version, segment_size, current_segment, write_offset, writer_epoch
 	4.	Set magic = CTRL_MAGIC
 	5.	Set init_state = 2 with Release
 	6.	rename(control.meta.tmp → control.meta) (atomic)
@@ -307,12 +313,14 @@ Segment data begins at SEG_DATA_OFFSET = 64.
 
 7.2 Writer rolling protocol (ordered)
 
-Trigger: write_offset + record_len > SEGMENT_SIZE.
+Trigger: write_offset + record_len > segment_size (from control.meta).
 	1.	Create and preallocate next segment file N+1.q (fallocate)
 	2.	Write SegmentHeader for N+1 (flags=0)
-	3.	Publish new segment to control block:
-	•	current_segment.store(N+1, Release)
-	•	write_offset.store(SEG_DATA_OFFSET, Release)
+	3.	Publish new segment to control block with a seqlock update:
+	•	segment_gen += 1 (odd)
+	•	current_segment.store(N+1, Relaxed)
+	•	write_offset.store(SEG_DATA_OFFSET, Relaxed)
+	•	segment_gen += 1 (even, Release)
 	4.	Seal old segment N.q:
 	•	set SEG_FLAG_SEALED in N’s segment header
 	•	msync the page containing the segment header (best effort)
@@ -325,7 +333,7 @@ Note: sealing after publishing is acceptable because readers only transition on 
 Readers track (segment_id, offset) and only transition when unable to progress in the current segment.
 
 Definitions:
-	•	SEG_END = SEGMENT_SIZE
+	•	SEG_END = segment_size (from control.meta)
 	•	MIN_RECORD = HEADER_SIZE (payload may be zero)
 	•	last_possible_record_boundary = SEG_END - MIN_RECORD
 	•	If offset > last_possible_record_boundary, there is not enough room to store even a minimal record header, so no valid new record can start at or beyond this point.

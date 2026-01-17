@@ -8,7 +8,8 @@ use crate::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, RECORD_ALIGN};
 use crate::mmap::MmapFile;
 use crate::segment::{
     create_segment, load_index, open_segment, read_segment_header, seal_segment, segment_path,
-    store_index, SegmentIndex, SEG_DATA_OFFSET, SEG_FLAG_SEALED, SEGMENT_SIZE,
+    store_index, validate_segment_size, DEFAULT_SEGMENT_SIZE, SegmentIndex, SEG_DATA_OFFSET,
+    SEG_FLAG_SEALED,
 };
 use crate::wait::futex_wake;
 use crate::writer_lock;
@@ -30,6 +31,7 @@ pub struct WriterConfig {
     pub max_segments: Option<u64>,
     pub max_bytes: Option<u64>,
     pub backpressure: BackpressurePolicy,
+    pub segment_size_bytes: u64,
 }
 
 impl Default for WriterConfig {
@@ -38,6 +40,7 @@ impl Default for WriterConfig {
             max_segments: None,
             max_bytes: None,
             backpressure: BackpressurePolicy::FailFast,
+            segment_size_bytes: DEFAULT_SEGMENT_SIZE as u64,
         }
     }
 }
@@ -51,6 +54,7 @@ impl WriterConfig {
                 timeout,
                 poll_interval: Duration::from_micros(BACKPRESSURE_POLL_US),
             },
+            segment_size_bytes: DEFAULT_SEGMENT_SIZE as u64,
         }
     }
 }
@@ -65,6 +69,7 @@ pub struct QueueWriter {
     write_offset: u64,
     seq: u64,
     config: WriterConfig,
+    segment_size: usize,
     _lock: WriterLock,
 }
 
@@ -83,12 +88,21 @@ impl Queue {
         let control_path = path.join(CONTROL_FILE);
         let lock = WriterLock::acquire(&path.join(WRITER_LOCK_FILE), 0)?;
 
-        let control = if control_path.exists() {
+        let (control, segment_size) = if control_path.exists() {
             let control = ControlFile::open(&control_path)?;
             control.wait_ready()?;
-            control
+            let segment_size = validate_segment_size(control.segment_size())?;
+            (control, segment_size)
         } else {
-            ControlFile::create(&control_path, 0, SEG_DATA_OFFSET as u64, 0)?
+            let segment_size = validate_segment_size(config.segment_size_bytes)?;
+            let control = ControlFile::create(
+                &control_path,
+                0,
+                SEG_DATA_OFFSET as u64,
+                0,
+                config.segment_size_bytes,
+            )?;
+            (control, segment_size)
         };
         let writer_epoch = control.writer_epoch().wrapping_add(1).max(1);
         control.set_writer_epoch(writer_epoch);
@@ -99,18 +113,21 @@ impl Queue {
         let index = load_index(&index_path)?;
         let mut segment_id = index.current_segment as u32;
         let mut mmap = if segment_path(&path, segment_id as u64).exists() {
-            open_segment(&path, segment_id as u64)?
+            open_segment(&path, segment_id as u64, segment_size)?
         } else {
-            create_segment(&path, segment_id as u64)?
+            create_segment(&path, segment_id as u64, segment_size)?
         };
 
-        let (tail_offset, tail_partial) = scan_segment_tail(&mmap, index.write_offset as usize)?;
+        let (tail_offset, tail_partial) =
+            scan_segment_tail(&mmap, index.write_offset as usize, segment_size)?;
         let mut write_offset = tail_offset as u64;
 
         if tail_partial {
-            if let Some(next_segment) = repair_tail_and_roll(&mut mmap, &path, segment_id)? {
+            if let Some(next_segment) =
+                repair_tail_and_roll(&mut mmap, &path, segment_id, segment_size)?
+            {
                 segment_id = next_segment;
-                mmap = open_segment(&path, segment_id as u64)?;
+                mmap = open_segment(&path, segment_id as u64, segment_size)?;
                 write_offset = SEG_DATA_OFFSET as u64;
             } else {
                 write_offset = SEG_DATA_OFFSET as u64;
@@ -127,16 +144,15 @@ impl Queue {
             }
             if next_path.exists() {
                 segment_id = next_segment_id;
-                mmap = open_segment(&path, segment_id as u64)?;
+                mmap = open_segment(&path, segment_id as u64, segment_size)?;
             } else {
-                mmap = create_segment(&path, next_segment_id as u64)?;
+                mmap = create_segment(&path, next_segment_id as u64, segment_size)?;
                 segment_id = next_segment_id;
             }
             write_offset = SEG_DATA_OFFSET as u64;
         }
 
-        control.set_current_segment(segment_id);
-        control.set_write_offset(write_offset);
+        control.set_segment_index(segment_id, write_offset);
 
         Ok(QueueWriter {
             path,
@@ -146,6 +162,7 @@ impl Queue {
             write_offset,
             seq: 0,
             config,
+            segment_size,
             _lock: lock,
         })
     }
@@ -171,13 +188,13 @@ impl QueueWriter {
             return Err(Error::PayloadTooLarge);
         }
         let record_len = align_up(HEADER_SIZE + payload.len(), RECORD_ALIGN);
-        if record_len > SEGMENT_SIZE - SEG_DATA_OFFSET {
+        if record_len > self.segment_size - SEG_DATA_OFFSET {
             return Err(Error::PayloadTooLarge);
         }
 
         self.ensure_capacity(record_len)?;
 
-        if (self.write_offset as usize) + record_len > SEGMENT_SIZE {
+        if (self.write_offset as usize) + record_len > self.segment_size {
             self.roll_segment()?;
         }
 
@@ -238,6 +255,7 @@ impl QueueWriter {
                 &self.path,
                 self.segment_id as u64,
                 self.write_offset,
+                self.segment_size as u64,
             )?;
 
             if self.has_capacity(record_len)? {
@@ -268,15 +286,16 @@ impl QueueWriter {
             &self.path,
             head_segment,
             head_offset,
+            self.segment_size as u64,
         )?;
-        let (next_segment, next_offset) = if (self.write_offset as usize) + record_len > SEGMENT_SIZE
+        let (next_segment, next_offset) = if (self.write_offset as usize) + record_len > self.segment_size
         {
             (head_segment + 1, SEG_DATA_OFFSET as u64 + record_len as u64)
         } else {
             (head_segment, head_offset + record_len as u64)
         };
         let head_after = next_segment
-            .saturating_mul(SEGMENT_SIZE as u64)
+            .saturating_mul(self.segment_size as u64)
             .saturating_add(next_offset);
 
         let bytes_ok = match self.config.max_bytes {
@@ -286,7 +305,7 @@ impl QueueWriter {
 
         let segments_ok = match self.config.max_segments {
             Some(max) => {
-                let min_segment = min_pos / SEGMENT_SIZE as u64;
+                let min_segment = min_pos / self.segment_size as u64;
                 let used = next_segment.saturating_sub(min_segment) + 1;
                 used <= max
             }
@@ -310,21 +329,26 @@ impl QueueWriter {
     }
 
     pub fn cleanup(&self) -> Result<Vec<u64>> {
-        crate::retention::cleanup_segments(&self.path, self.segment_id as u64, self.write_offset)
+        crate::retention::cleanup_segments(
+            &self.path,
+            self.segment_id as u64,
+            self.write_offset,
+            self.segment_size as u64,
+        )
     }
 
     fn roll_segment(&mut self) -> Result<()> {
         let next_segment = self.segment_id + 1;
-        create_segment(&self.path, next_segment as u64)?;
-        self.control.set_current_segment(next_segment);
-        self.control.set_write_offset(SEG_DATA_OFFSET as u64);
+        create_segment(&self.path, next_segment as u64, self.segment_size)?;
+        self.control
+            .set_segment_index(next_segment, SEG_DATA_OFFSET as u64);
 
         seal_segment(&mut self.mmap)?;
         self.mmap.sync()?;
 
         self.segment_id = next_segment;
         self.write_offset = SEG_DATA_OFFSET as u64;
-        self.mmap = open_segment(&self.path, next_segment as u64)?;
+        self.mmap = open_segment(&self.path, next_segment as u64, self.segment_size)?;
         self.control.set_writer_heartbeat_ns(now_ns()?);
 
         self.control
@@ -378,12 +402,16 @@ fn now_ns() -> Result<u64> {
         .map_err(|_| Error::Unsupported("system time exceeds timestamp range"))
 }
 
-fn scan_segment_tail(mmap: &MmapFile, start_offset: usize) -> Result<(usize, bool)> {
+fn scan_segment_tail(
+    mmap: &MmapFile,
+    start_offset: usize,
+    segment_size: usize,
+) -> Result<(usize, bool)> {
     let mut offset = start_offset.max(SEG_DATA_OFFSET);
     let mut partial = false;
 
     loop {
-        if offset + HEADER_SIZE > SEGMENT_SIZE {
+        if offset + HEADER_SIZE > segment_size {
             break;
         }
         let commit = MessageHeader::load_commit_len(&mmap.as_slice()[offset] as *const u8);
@@ -406,7 +434,7 @@ fn scan_segment_tail(mmap: &MmapFile, start_offset: usize) -> Result<(usize, boo
             break;
         }
         let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
-        if offset + record_len > SEGMENT_SIZE {
+        if offset + record_len > segment_size {
             partial = true;
             break;
         }
@@ -416,17 +444,22 @@ fn scan_segment_tail(mmap: &MmapFile, start_offset: usize) -> Result<(usize, boo
     Ok((offset, partial))
 }
 
-fn repair_tail_and_roll(mmap: &mut MmapFile, root: &Path, segment_id: u32) -> Result<Option<u32>> {
+fn repair_tail_and_roll(
+    mmap: &mut MmapFile,
+    root: &Path,
+    segment_id: u32,
+    segment_size: usize,
+) -> Result<Option<u32>> {
     let header = read_segment_header(mmap)?;
     if (header.flags & crate::segment::SEG_FLAG_SEALED) != 0 {
         let next_segment = segment_id + 1;
-        create_segment(root, next_segment as u64)?;
+        create_segment(root, next_segment as u64, segment_size)?;
         return Ok(Some(next_segment));
     }
 
-    crate::segment::repair_unsealed_tail(mmap)?;
+    crate::segment::repair_unsealed_tail(mmap, segment_size)?;
     let next_segment = segment_id + 1;
-    create_segment(root, next_segment as u64)?;
+    create_segment(root, next_segment as u64, segment_size)?;
     Ok(Some(next_segment))
 }
 
@@ -435,15 +468,24 @@ fn repair_tail_and_roll(mmap: &mut MmapFile, root: &Path, segment_id: u32) -> Re
 mod tests {
     use super::Queue;
     use crate::header::HEADER_SIZE;
-    use crate::segment::{SEG_DATA_OFFSET, SEGMENT_SIZE};
+    use crate::segment::SEG_DATA_OFFSET;
+    use crate::writer::WriterConfig;
     use crate::Error;
     use tempfile::tempdir;
 
     #[test]
     fn payload_size_accounts_for_segment_header() {
         let dir = tempdir().expect("tempdir");
-        let mut writer = Queue::open_publisher(dir.path()).expect("open publisher");
-        let max_record_len = SEGMENT_SIZE - SEG_DATA_OFFSET;
+        let segment_size = 1 * 1024 * 1024;
+        let mut writer = Queue::open_publisher_with_config(
+            dir.path(),
+            WriterConfig {
+                segment_size_bytes: segment_size as u64,
+                ..WriterConfig::default()
+            },
+        )
+        .expect("open publisher");
+        let max_record_len = segment_size - SEG_DATA_OFFSET;
         let max_payload_len = max_record_len - HEADER_SIZE;
         let payload = vec![0u8; max_payload_len];
 

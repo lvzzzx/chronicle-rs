@@ -1,8 +1,10 @@
 use chronicle_core::header::{MessageHeader, HEADER_SIZE, RECORD_ALIGN};
 use chronicle_core::mmap::MmapFile;
-use chronicle_core::segment::{SEGMENT_SIZE, SEG_DATA_OFFSET};
-use chronicle_core::Queue;
+use chronicle_core::segment::SEG_DATA_OFFSET;
+use chronicle_core::{Queue, WriterConfig};
 use tempfile::tempdir;
+
+const TEST_SEGMENT_SIZE: usize = 1 * 1024 * 1024;
 
 fn read_header(map: &[u8], offset: usize) -> MessageHeader {
     let mut buf = [0u8; 64];
@@ -19,7 +21,14 @@ fn append_two_messages_and_recover() {
     let dir = tempdir().expect("tempdir");
     let queue_path = dir.path().join("orders");
 
-    let mut writer = Queue::open_publisher(&queue_path).expect("queue open");
+    let mut writer = Queue::open_publisher_with_config(
+        &queue_path,
+        WriterConfig {
+            segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            ..WriterConfig::default()
+        },
+    )
+    .expect("queue open");
 
     let payload_a = b"alpha";
     let payload_b = b"bravo-bravo";
@@ -30,7 +39,7 @@ fn append_two_messages_and_recover() {
 
     let segment_path = queue_path.join("000000000.q");
     let mmap = MmapFile::open(&segment_path).expect("mmap open");
-    assert_eq!(mmap.len(), SEGMENT_SIZE);
+    assert_eq!(mmap.len(), TEST_SEGMENT_SIZE);
 
     let first_offset = SEG_DATA_OFFSET;
     let first_len = align_up(HEADER_SIZE + payload_a.len(), RECORD_ALIGN);
@@ -53,7 +62,14 @@ fn append_two_messages_and_recover() {
 
     drop(writer);
 
-    let mut writer = Queue::open_publisher(&queue_path).expect("queue reopen");
+    let mut writer = Queue::open_publisher_with_config(
+        &queue_path,
+        WriterConfig {
+            segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            ..WriterConfig::default()
+        },
+    )
+    .expect("queue reopen");
     let payload_c = b"charlie";
     writer.append(1, payload_c).expect("append charlie");
 

@@ -4,13 +4,14 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use chronicle_core::{Error, MessageView, Queue, Result};
+use chronicle_core::{Error, MessageView, Queue, Result, WriterConfig};
 use tempfile::tempdir;
 
 const PAYLOAD_LEN: usize = 16;
 const PAYLOAD_TAG: [u8; 8] = *b"chrcore!";
 const TYPE_ID: u16 = 1;
 const DEFAULT_SOAK_SECS: u64 = 30;
+const TEST_SEGMENT_SIZE: usize = 1 * 1024 * 1024;
 
 #[test]
 #[ignore]
@@ -23,7 +24,13 @@ fn run_soak(duration: Duration) -> Result<()> {
     let dir = tempdir().expect("tempdir");
     let queue_path = dir.path().join("soak_queue");
 
-    let mut writer = Queue::open_publisher(&queue_path)?;
+    let mut writer = Queue::open_publisher_with_config(
+        &queue_path,
+        WriterConfig {
+            segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            ..WriterConfig::default()
+        },
+    )?;
     let mut reader = Queue::open_subscriber(&queue_path, "soak")?;
 
     let running = Arc::new(AtomicBool::new(true));

@@ -1,6 +1,8 @@
 use chronicle_core::merge::FanInReader;
-use chronicle_core::Queue;
+use chronicle_core::{Queue, WriterConfig};
 use tempfile::tempdir;
+
+const TEST_SEGMENT_SIZE: usize = 1 * 1024 * 1024;
 
 #[test]
 fn merge_orders_by_timestamp_and_source() {
@@ -8,8 +10,22 @@ fn merge_orders_by_timestamp_and_source() {
     let queue_a_path = dir.path().join("queue_a");
     let queue_b_path = dir.path().join("queue_b");
 
-    let mut writer_a = Queue::open_publisher(&queue_a_path).expect("queue a");
-    let mut writer_b = Queue::open_publisher(&queue_b_path).expect("queue b");
+    let mut writer_a = Queue::open_publisher_with_config(
+        &queue_a_path,
+        WriterConfig {
+            segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            ..WriterConfig::default()
+        },
+    )
+    .expect("queue a");
+    let mut writer_b = Queue::open_publisher_with_config(
+        &queue_b_path,
+        WriterConfig {
+            segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            ..WriterConfig::default()
+        },
+    )
+    .expect("queue b");
 
     writer_a
         .append_with_timestamp(1, b"a1", 100)
@@ -54,8 +70,22 @@ fn merge_returns_none_when_empty() {
     let reader_a = Queue::open_subscriber(&queue_a_path, "fanin");
     assert!(reader_a.is_err());
 
-    let _writer_a = Queue::open_publisher(&queue_a_path).expect("writer a");
-    let _writer_b = Queue::open_publisher(&queue_b_path).expect("writer b");
+    let _writer_a = Queue::open_publisher_with_config(
+        &queue_a_path,
+        WriterConfig {
+            segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            ..WriterConfig::default()
+        },
+    )
+    .expect("writer a");
+    let _writer_b = Queue::open_publisher_with_config(
+        &queue_b_path,
+        WriterConfig {
+            segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            ..WriterConfig::default()
+        },
+    )
+    .expect("writer b");
 
     let reader_a = Queue::open_subscriber(&queue_a_path, "fanin").expect("reader a");
     let reader_b = Queue::open_subscriber(&queue_b_path, "fanin").expect("reader b");

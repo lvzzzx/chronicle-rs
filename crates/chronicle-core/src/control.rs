@@ -6,7 +6,7 @@ use crate::mmap::MmapFile;
 use crate::{Error, Result};
 
 pub const CTRL_MAGIC: u32 = 0x4348_524E; // 'CHRN'
-pub const CTRL_VERSION: u32 = 1;
+pub const CTRL_VERSION: u32 = 2;
 
 #[repr(C, align(128))]
 pub struct ControlBlock {
@@ -14,12 +14,15 @@ pub struct ControlBlock {
     pub magic: AtomicU32,
     pub version: AtomicU32,
     pub init_state: AtomicU32,
+    pub _pad0: [u8; 4],
     pub writer_epoch: AtomicU64,
-    pub _pad1: [u8; 108],
+    pub segment_size: AtomicU64,
+    pub _pad1: [u8; 96],
 
     // Reader-hot, rarely written.
+    pub segment_gen: AtomicU32,
     pub current_segment: AtomicU32,
-    pub _pad2: [u8; 124],
+    pub _pad2: [u8; 120],
 
     // Writer-hot.
     pub write_offset: AtomicU64,
@@ -38,7 +41,13 @@ pub struct ControlFile {
 unsafe impl Send for ControlFile {}
 
 impl ControlFile {
-    pub fn create(path: &Path, current_segment: u32, write_offset: u64, writer_epoch: u64) -> Result<Self> {
+    pub fn create(
+        path: &Path,
+        current_segment: u32,
+        write_offset: u64,
+        writer_epoch: u64,
+        segment_size: u64,
+    ) -> Result<Self> {
         let tmp_path = path.with_extension("tmp");
         let mut mmap = MmapFile::create(&tmp_path, size_of::<ControlBlock>())?;
         mmap.as_mut_slice().fill(0);
@@ -46,6 +55,8 @@ impl ControlFile {
         let block = unsafe { &*ptr };
         block.init_state.store(1, Ordering::Relaxed);
         block.version.store(CTRL_VERSION, Ordering::Relaxed);
+        block.segment_size.store(segment_size, Ordering::Relaxed);
+        block.segment_gen.store(0, Ordering::Relaxed);
         block.current_segment.store(current_segment, Ordering::Relaxed);
         block.write_offset.store(write_offset, Ordering::Relaxed);
         block.writer_epoch.store(writer_epoch, Ordering::Relaxed);
@@ -92,6 +103,10 @@ impl ControlFile {
         self.block().current_segment.load(Ordering::Acquire)
     }
 
+    pub fn segment_size(&self) -> u64 {
+        self.block().segment_size.load(Ordering::Acquire)
+    }
+
     pub fn set_current_segment(&self, segment: u32) {
         self.block().current_segment.store(segment, Ordering::Release);
     }
@@ -102,6 +117,29 @@ impl ControlFile {
 
     pub fn set_write_offset(&self, offset: u64) {
         self.block().write_offset.store(offset, Ordering::Release);
+    }
+
+    pub fn segment_index(&self) -> (u32, u64) {
+        loop {
+            let start = self.block().segment_gen.load(Ordering::Acquire);
+            if (start & 1) != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let segment = self.block().current_segment.load(Ordering::Acquire);
+            let offset = self.block().write_offset.load(Ordering::Acquire);
+            let end = self.block().segment_gen.load(Ordering::Acquire);
+            if start == end && (end & 1) == 0 {
+                return (segment, offset);
+            }
+        }
+    }
+
+    pub fn set_segment_index(&self, segment: u32, offset: u64) {
+        self.block().segment_gen.fetch_add(1, Ordering::SeqCst);
+        self.block().current_segment.store(segment, Ordering::Relaxed);
+        self.block().write_offset.store(offset, Ordering::Relaxed);
+        self.block().segment_gen.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn notify_seq(&self) -> &AtomicU32 {

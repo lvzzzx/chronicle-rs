@@ -1,5 +1,5 @@
 #[cfg(target_os = "linux")]
-use chronicle_core::Queue;
+use chronicle_core::{Queue, WriterConfig};
 #[cfg(target_os = "linux")]
 use std::sync::mpsc;
 #[cfg(target_os = "linux")]
@@ -9,7 +9,13 @@ use std::time::Duration;
 #[test]
 fn reader_wait_wakes_on_append() -> chronicle_core::Result<()> {
     let dir = tempfile::tempdir()?;
-    let mut writer = Queue::open_publisher(dir.path())?;
+    let mut writer = Queue::open_publisher_with_config(
+        dir.path(),
+        WriterConfig {
+            segment_size_bytes: 1 * 1024 * 1024,
+            ..WriterConfig::default()
+        },
+    )?;
     let mut reader = Queue::open_subscriber(dir.path(), "reader_a")?;
 
     assert!(reader.next()?.is_none());

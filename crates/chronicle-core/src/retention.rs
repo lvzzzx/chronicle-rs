@@ -8,13 +8,18 @@ use crate::{Error, Result};
 const READER_TTL_NS: u64 = 30_000_000_000;
 const MAX_RETENTION_LAG: u64 = 10 * 1024 * 1024 * 1024;
 
-pub fn cleanup_segments(root: &Path, head_segment: u64, head_offset: u64) -> Result<Vec<u64>> {
+pub fn cleanup_segments(
+    root: &Path,
+    head_segment: u64,
+    head_offset: u64,
+    segment_size: u64,
+) -> Result<Vec<u64>> {
     let readers_dir = root.join("readers");
     if !readers_dir.exists() {
         return Ok(Vec::new());
     }
 
-    let min_segment = min_live_reader_segment(root, head_segment, head_offset)?;
+    let min_segment = min_live_reader_segment(root, head_segment, head_offset, segment_size)?;
 
     let mut deleted = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -41,14 +46,19 @@ pub fn cleanup_segments(root: &Path, head_segment: u64, head_offset: u64) -> Res
     Ok(deleted)
 }
 
-pub fn min_live_reader_segment(root: &Path, head_segment: u64, head_offset: u64) -> Result<u64> {
+pub fn min_live_reader_segment(
+    root: &Path,
+    head_segment: u64,
+    head_offset: u64,
+    segment_size: u64,
+) -> Result<u64> {
     let readers_dir = root.join("readers");
     if !readers_dir.exists() {
         return Ok(head_segment);
     }
 
     let head = head_segment
-        .saturating_mul(crate::segment::SEGMENT_SIZE as u64)
+        .saturating_mul(segment_size)
         .saturating_add(head_offset);
     let now_ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -72,7 +82,7 @@ pub fn min_live_reader_segment(root: &Path, head_segment: u64, head_offset: u64)
         }
         let reader_global = meta
             .segment_id
-            .saturating_mul(crate::segment::SEGMENT_SIZE as u64)
+            .saturating_mul(segment_size)
             .saturating_add(meta.offset);
         if head > reader_global && head - reader_global > MAX_RETENTION_LAG {
             continue;
@@ -86,10 +96,15 @@ pub fn min_live_reader_segment(root: &Path, head_segment: u64, head_offset: u64)
     Ok(min_segment.unwrap_or(head_segment))
 }
 
-pub fn min_live_reader_position(root: &Path, head_segment: u64, head_offset: u64) -> Result<u64> {
+pub fn min_live_reader_position(
+    root: &Path,
+    head_segment: u64,
+    head_offset: u64,
+    segment_size: u64,
+) -> Result<u64> {
     let readers_dir = root.join("readers");
     let head = head_segment
-        .saturating_mul(crate::segment::SEGMENT_SIZE as u64)
+        .saturating_mul(segment_size)
         .saturating_add(head_offset);
     if !readers_dir.exists() {
         return Ok(head);
@@ -117,7 +132,7 @@ pub fn min_live_reader_position(root: &Path, head_segment: u64, head_offset: u64
         }
         let reader_global = meta
             .segment_id
-            .saturating_mul(crate::segment::SEGMENT_SIZE as u64)
+            .saturating_mul(segment_size)
             .saturating_add(meta.offset);
         if head > reader_global && head - reader_global > MAX_RETENTION_LAG {
             continue;

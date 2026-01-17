@@ -1,16 +1,25 @@
 use chronicle_core::header::HEADER_SIZE;
-use chronicle_core::segment::{SEGMENT_SIZE, SEG_DATA_OFFSET};
-use chronicle_core::Queue;
+use chronicle_core::segment::SEG_DATA_OFFSET;
+use chronicle_core::{Queue, WriterConfig};
 use tempfile::tempdir;
+
+const TEST_SEGMENT_SIZE: usize = 1 * 1024 * 1024;
 
 #[test]
 fn segment_rollover_and_read_across() {
     let dir = tempdir().expect("tempdir");
     let queue_path = dir.path().join("orders");
 
-    let mut writer = Queue::open_publisher(&queue_path).expect("queue open");
+    let mut writer = Queue::open_publisher_with_config(
+        &queue_path,
+        WriterConfig {
+            segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            ..WriterConfig::default()
+        },
+    )
+    .expect("queue open");
 
-    let usable = SEGMENT_SIZE - SEG_DATA_OFFSET;
+    let usable = TEST_SEGMENT_SIZE - SEG_DATA_OFFSET;
     let payload_a = vec![b'a'; usable - HEADER_SIZE];
     let payload_b = b"bravo".to_vec();
 

@@ -9,7 +9,7 @@ use crate::header::{
 use crate::mmap::MmapFile;
 use crate::segment::{
     load_reader_meta, open_segment, read_segment_header, segment_path, store_reader_meta,
-    ReaderMeta, SEG_DATA_OFFSET, SEG_FLAG_SEALED, SEGMENT_SIZE,
+    validate_segment_size, ReaderMeta, SEG_DATA_OFFSET, SEG_FLAG_SEALED,
 };
 use crate::wait::futex_wait;
 use crate::writer::Queue;
@@ -42,6 +42,7 @@ pub struct QueueReader {
     meta_path: PathBuf,
     meta: ReaderMeta,
     wait_strategy: WaitStrategy,
+    segment_size: usize,
 }
 
 impl Queue {
@@ -53,6 +54,7 @@ impl Queue {
         let control_path = path.join("control.meta");
         let control = ControlFile::open(&control_path)?;
         control.wait_ready()?;
+        let segment_size = validate_segment_size(control.segment_size())?;
 
         let readers_dir = path.join(READERS_DIR);
         std::fs::create_dir_all(&readers_dir)?;
@@ -68,7 +70,7 @@ impl Queue {
         if !segment_path.exists() {
             return Err(Error::Corrupt("reader segment missing"));
         }
-        let mmap = open_segment(&path, meta.segment_id)?;
+        let mmap = open_segment(&path, meta.segment_id, segment_size)?;
 
         Ok(QueueReader {
             path,
@@ -81,13 +83,14 @@ impl Queue {
             wait_strategy: WaitStrategy::Hybrid {
                 spin_us: DEFAULT_SPIN_US,
             },
+            segment_size,
         })
     }
 }
 
 impl QueueReader {
     pub fn next(&mut self) -> Result<Option<MessageView<'_>>> {
-        let last_possible = (SEGMENT_SIZE - HEADER_SIZE) as u64;
+        let last_possible = (self.segment_size - HEADER_SIZE) as u64;
         loop {
             if self.read_offset > last_possible {
                 if self.advance_segment()? {
@@ -110,7 +113,7 @@ impl QueueReader {
                 return Err(Error::Corrupt("payload length exceeds max"));
             }
             let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
-            if offset + record_len > SEGMENT_SIZE {
+            if offset + record_len > self.segment_size {
                 return Err(Error::Corrupt("record length out of bounds"));
             }
 
@@ -185,7 +188,7 @@ impl QueueReader {
     }
 
     fn peek_committed(&self) -> Result<bool> {
-        let last_possible = SEGMENT_SIZE - HEADER_SIZE;
+        let last_possible = self.segment_size - HEADER_SIZE;
         if self.read_offset as usize > last_possible {
             return Ok(false);
         }
@@ -205,9 +208,9 @@ impl QueueReader {
             if !self.writer_dead()? {
                 return Ok(false);
             }
-            crate::segment::repair_unsealed_tail(&mut self.mmap)?;
+            crate::segment::repair_unsealed_tail(&mut self.mmap, self.segment_size)?;
         }
-        self.mmap = open_segment(&self.path, next_segment as u64)?;
+        self.mmap = open_segment(&self.path, next_segment as u64, self.segment_size)?;
         self.segment_id = next_segment;
         self.read_offset = SEG_DATA_OFFSET as u64;
         Ok(true)
