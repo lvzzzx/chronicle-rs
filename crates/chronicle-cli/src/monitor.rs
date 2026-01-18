@@ -2,7 +2,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use chronicle_core::{Queue, Clock, QuantaClock};
+use chronicle_core::{Queue, Clock, QuantaClock, ReaderConfig, StartMode};
 use clap::Args;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -42,7 +42,14 @@ pub fn run(args: MonitorArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Open subscriber
-    let mut reader = Queue::open_subscriber(&args.path, "monitor")?;
+    let mut reader = Queue::open_subscriber_with_config(
+        &args.path,
+        "monitor",
+        ReaderConfig {
+            start_mode: StartMode::ResumeLatest,
+            ..Default::default()
+        },
+    )?;
     
     // Jump to end - we only care about new data (latency of old data is misleading/huge)
     // Actually, "open_subscriber" defaults to start (0). We should seek to end?
@@ -59,8 +66,6 @@ fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Res
     let mut count_window = 0u64;
     let mut last_tick = Instant::now();
     let interval = Duration::from_millis(args.interval);
-
-    let mut last_stats = LatencyStats::default();
 
     loop {
         // 1. Drain Queue
@@ -86,7 +91,7 @@ fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Res
         if last_tick.elapsed() >= interval {
             // Calculate stats
             let rate = count_window as f64 / last_tick.elapsed().as_secs_f64();
-            last_stats = LatencyStats {
+            let last_stats = LatencyStats {
                 p50: histogram.value_at_quantile(0.5),
                 p99: histogram.value_at_quantile(0.99),
                 p999: histogram.value_at_quantile(0.999),
