@@ -14,6 +14,7 @@ fn retention_deletes_only_when_all_readers_advance() {
         &queue_path,
         WriterConfig {
             segment_size_bytes: TEST_SEGMENT_SIZE as u64,
+            retention_check_interval: std::time::Duration::from_secs(3600),
             ..WriterConfig::default()
         },
     )

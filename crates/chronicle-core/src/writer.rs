@@ -29,55 +29,68 @@ const PREALLOC_YIELD_EVERY: u32 = 64;
 const PREALLOC_QUEUE_DEPTH: usize = 1;
 const PREALLOC_NO_REQUEST: u64 = u64::MAX;
 
-// Avoid scanning reader metadata on every append; refresh on coarse thresholds.
-struct RetentionCache {
-    min_pos: u64,
-    last_head: u64,
-    last_check: Instant,
-    valid: bool,
-    check_interval: Duration,
-    check_bytes: u64,
+// Offload retention checks to a background thread to avoid filesystem I/O on the hot path.
+struct RetentionWorker {
+    request_tx: mpsc::SyncSender<(u64, u64)>, // (segment_id, offset)
 }
 
-impl RetentionCache {
-    fn new(check_interval: Duration, check_bytes: u64) -> Self {
-        Self {
-            min_pos: 0,
-            last_head: 0,
-            last_check: Instant::now(),
-            valid: false,
-            check_interval,
-            check_bytes,
-        }
+impl RetentionWorker {
+    fn new(
+        path: PathBuf,
+        segment_size: u64,
+        check_interval: Duration,
+        min_reader_pos: Arc<AtomicU64>,
+    ) -> Result<Self> {
+        let (request_tx, request_rx) = mpsc::sync_channel::<(u64, u64)>(1);
+
+        thread::Builder::new()
+            .name("segment-retention".to_string())
+            .spawn(move || {
+                let mut last_head = (0, 0);
+                loop {
+                    let head = match request_rx.recv_timeout(check_interval) {
+                        Ok(head) => {
+                            last_head = head;
+                            head
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if last_head.0 == 0 && last_head.1 == 0 {
+                                continue;
+                            }
+                            last_head
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+
+                    let (head_segment, head_offset) = head;
+
+                    // 1. Update min_reader_pos
+                    match crate::retention::min_live_reader_position(
+                        &path,
+                        head_segment,
+                        head_offset,
+                        segment_size,
+                    ) {
+                        Ok(pos) => min_reader_pos.store(pos, Ordering::Release),
+                        Err(_) => {} // Squelch errors in background
+                    }
+
+                    // 2. Perform cleanup
+                    let _ = crate::retention::cleanup_segments(
+                        &path,
+                        head_segment,
+                        head_offset,
+                        segment_size,
+                    );
+                }
+            })
+            .map_err(Error::Io)?;
+
+        Ok(Self { request_tx })
     }
 
-    fn min_pos(
-        &mut self,
-        path: &Path,
-        head_segment: u64,
-        head_offset: u64,
-        segment_size: u64,
-    ) -> Result<u64> {
-        let head = head_segment
-            .saturating_mul(segment_size)
-            .saturating_add(head_offset);
-        let now = Instant::now();
-        if !self.valid
-            || now.duration_since(self.last_check) >= self.check_interval
-            || head.saturating_sub(self.last_head) >= self.check_bytes
-        {
-            let min_pos = crate::retention::min_live_reader_position(
-                path,
-                head_segment,
-                head_offset,
-                segment_size,
-            )?;
-            self.min_pos = min_pos;
-            self.last_head = head;
-            self.last_check = now;
-            self.valid = true;
-        }
-        Ok(self.min_pos)
+    fn request(&self, segment_id: u64, offset: u64) {
+        let _ = self.request_tx.try_send((segment_id, offset));
     }
 }
 
@@ -299,7 +312,10 @@ pub struct QueueWriter {
     seq: u64,
     config: WriterConfig,
     segment_size: usize,
-    retention_cache: RetentionCache,
+    retention_worker: RetentionWorker,
+    min_reader_pos: Arc<AtomicU64>,
+    last_retention_signal_head: u64,
+    last_retention_signal_time: Instant,
     prealloc: PreallocWorker,
     async_sealer: Option<AsyncSealer>,
     _lock: WriterLock,
@@ -399,6 +415,24 @@ impl Queue {
 
         control.set_segment_index(segment_id, write_offset);
 
+        let head_global = segment_id as u64 * segment_size as u64 + write_offset;
+        let min_reader_pos = Arc::new(AtomicU64::new(0));
+        let initial_min = crate::retention::min_live_reader_position(
+            &path,
+            segment_id as u64,
+            write_offset,
+            segment_size as u64,
+        )
+        .unwrap_or(head_global);
+        min_reader_pos.store(initial_min, Ordering::Relaxed);
+
+        let retention_worker = RetentionWorker::new(
+            path.clone(),
+            segment_size as u64,
+            config.retention_check_interval,
+            Arc::clone(&min_reader_pos),
+        )?;
+
         let prealloc = PreallocWorker::new(path.clone(), segment_size, config.memlock)?;
         let async_sealer = if config.defer_seal_sync {
             Some(AsyncSealer::new()?)
@@ -418,7 +452,10 @@ impl Queue {
             seq: 0,
             config,
             segment_size,
-            retention_cache: RetentionCache::new(config.retention_check_interval, config.retention_check_bytes),
+            retention_worker,
+            min_reader_pos,
+            last_retention_signal_head: head_global,
+            last_retention_signal_time: Instant::now(),
             prealloc,
             async_sealer,
             _lock: lock,
@@ -556,6 +593,19 @@ impl QueueWriter {
         if self.control.waiters_pending().load(Ordering::SeqCst) > 0 {
             futex_wake(self.control.notify_seq())?;
         }
+
+        let head_global = (self.segment_id as u64)
+            .saturating_mul(self.segment_size as u64)
+            .saturating_add(self.write_offset);
+        if head_global.saturating_sub(self.last_retention_signal_head)
+            >= self.config.retention_check_bytes
+            || self.last_retention_signal_time.elapsed() >= self.config.retention_check_interval
+        {
+            self.retention_worker
+                .request(self.segment_id as u64, self.write_offset);
+            self.last_retention_signal_head = head_global;
+            self.last_retention_signal_time = Instant::now();
+        }
         Ok(())
     }
 
@@ -574,16 +624,8 @@ impl QueueWriter {
                 return Ok(());
             }
 
-            crate::retention::cleanup_segments(
-                &self.path,
-                self.segment_id as u64,
-                self.write_offset,
-                self.segment_size as u64,
-            )?;
-
-            if self.has_capacity(record_len)? {
-                return Ok(());
-            }
+            self.retention_worker
+                .request(self.segment_id as u64, self.write_offset);
 
             match self.config.backpressure {
                 BackpressurePolicy::FailFast => return Err(Error::QueueFull),
@@ -605,18 +647,16 @@ impl QueueWriter {
     fn has_capacity(&mut self, record_len: usize) -> Result<bool> {
         let head_segment = self.segment_id as u64;
         let head_offset = self.write_offset;
-        let min_pos = self.retention_cache.min_pos(
-            &self.path,
-            head_segment,
-            head_offset,
-            self.segment_size as u64,
-        )?;
-        let (next_segment, next_offset) = if (self.write_offset as usize) + record_len > self.segment_size
-        {
-            (head_segment + 1, SEG_DATA_OFFSET as u64 + record_len as u64)
-        } else {
-            (head_segment, head_offset + record_len as u64)
-        };
+        let min_pos = self.min_reader_pos.load(Ordering::Relaxed);
+        let (next_segment, next_offset) =
+            if (self.write_offset as usize) + record_len > self.segment_size {
+                (
+                    head_segment + 1,
+                    SEG_DATA_OFFSET as u64 + record_len as u64,
+                )
+            } else {
+                (head_segment, head_offset + record_len as u64)
+            };
         let head_after = next_segment
             .saturating_mul(self.segment_size as u64)
             .saturating_add(next_offset);
