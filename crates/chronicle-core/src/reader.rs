@@ -45,14 +45,41 @@ pub enum WaitStrategy {
     Sleep(Duration),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartMode {
+    /// Resume from the last saved position. If the segment is missing (retention),
+    /// fail with an error.
+    ResumeStrict,
+    /// Resume from the last saved position. If the segment is missing,
+    /// snap to the oldest available segment.
+    ResumeSnapshot,
+    /// Resume from the last saved position. If the segment is missing,
+    /// snap to the current writer position (latest).
+    ResumeLatest,
+    /// Ignore previous state and start at the current writer position.
+    Latest,
+    /// Ignore previous state and start at the oldest available segment.
+    Earliest,
+}
+
+impl Default for StartMode {
+    fn default() -> Self {
+        Self::ResumeStrict
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ReaderConfig {
     pub memlock: bool,
+    pub start_mode: StartMode,
 }
 
 impl Default for ReaderConfig {
     fn default() -> Self {
-        Self { memlock: false }
+        Self {
+            memlock: false,
+            start_mode: StartMode::default(),
+        }
     }
 }
 
@@ -92,6 +119,38 @@ impl Queue {
         std::fs::create_dir_all(&readers_dir)?;
         let meta_path = readers_dir.join(format!("{reader}.meta"));
         let mut meta = load_reader_meta(&meta_path)?;
+
+        let segment_path_check = segment_path(&path, meta.segment_id);
+        let should_reset = match config.start_mode {
+            StartMode::ResumeStrict => false,
+            StartMode::ResumeSnapshot | StartMode::ResumeLatest => !segment_path_check.exists(),
+            StartMode::Latest | StartMode::Earliest => true,
+        };
+
+        if should_reset {
+            match config.start_mode {
+                StartMode::Latest | StartMode::ResumeLatest => {
+                    let (seg, off) = control.segment_index();
+                    meta.segment_id = seg as u64;
+                    meta.offset = off;
+                }
+                StartMode::Earliest | StartMode::ResumeSnapshot => {
+                    match find_oldest_segment(&path) {
+                        Ok(id) => {
+                            meta.segment_id = id;
+                            meta.offset = SEG_DATA_OFFSET as u64;
+                        }
+                        Err(_) => {
+                            let (seg, _) = control.segment_index();
+                            meta.segment_id = seg as u64;
+                            meta.offset = SEG_DATA_OFFSET as u64;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         if meta.offset < SEG_DATA_OFFSET as u64 {
             meta.offset = SEG_DATA_OFFSET as u64;
         }
@@ -125,6 +184,24 @@ impl Queue {
     }
 }
 
+    fn find_oldest_segment(path: &std::path::Path) -> Result<u64> {
+    let mut min_id = None;
+    for entry in std::fs::read_dir(path).map_err(Error::Io)? {
+        let entry = entry.map_err(Error::Io)?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.ends_with(".q") && name_str.len() == 11 {
+            if let Ok(id) = name_str[0..9].parse::<u64>() {
+                min_id = Some(match min_id {
+                    Some(val) => std::cmp::min(val, id),
+                    None => id,
+                });
+            }
+        }
+    }
+    min_id.ok_or(Error::Corrupt("no segments found"))
+}
+
 impl QueueReader {
     pub fn next(&mut self) -> Result<Option<MessageView<'_>>> {
         let Some(message) = self.next_ref()? else {
@@ -150,10 +227,18 @@ impl QueueReader {
         self.maybe_heartbeat()?;
         match self.wait_strategy {
             WaitStrategy::BusySpin => {
-                while !self.peek_committed()? {
+                let deadline = timeout.map(|t| std::time::Instant::now() + t);
+                loop {
+                    if self.peek_committed()? {
+                        return Ok(());
+                    }
+                    if let Some(d) = deadline {
+                        if std::time::Instant::now() >= d {
+                            return Ok(());
+                        }
+                    }
                     std::hint::spin_loop();
                 }
-                return Ok(());
             }
             WaitStrategy::Sleep(duration) => {
                 std::thread::sleep(duration);
@@ -162,9 +247,14 @@ impl QueueReader {
             WaitStrategy::SpinThenPark { spin_us } => {
                 let spin_deadline = std::time::Instant::now()
                     + Duration::from_micros(spin_us as u64);
-                while std::time::Instant::now() < spin_deadline {
+                let mut i = 0;
+                loop {
                     if self.peek_committed()? {
                         return Ok(());
+                    }
+                    i += 1;
+                    if i % 128 == 0 && std::time::Instant::now() >= spin_deadline {
+                        break;
                     }
                     std::hint::spin_loop();
                 }
@@ -197,6 +287,10 @@ impl QueueReader {
 
     pub fn set_wait_strategy(&mut self, strategy: WaitStrategy) {
         self.wait_strategy = strategy;
+    }
+
+    pub fn segment_id(&self) -> u32 {
+        self.segment_id
     }
 
     pub(crate) fn next_ref(&mut self) -> Result<Option<MessageRef>> {

@@ -16,6 +16,6 @@ pub mod writer;
 mod writer_lock;
 
 pub use error::{Error, Result};
-pub use reader::{MessageView, QueueReader, ReaderConfig, WaitStrategy};
+pub use reader::{MessageView, QueueReader, ReaderConfig, StartMode, WaitStrategy};
 pub use writer::{BackpressurePolicy, Queue, QueueWriter, WriterConfig};
 pub use writer_lock::{lock_owner_alive, read_lock_info, WriterLockInfo};
