@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use chronicle_bus::{PassiveConfig, PassiveDiscovery, PassiveEvent};
+use chronicle_bus::{SubscriberConfig, SubscriberDiscovery, SubscriberEvent};
 use chronicle_core::{QueueReader, WaitStrategy};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -10,21 +10,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("usage: passive_subscriber <queue_path> [reader_name]");
     let reader_name = args.next().unwrap_or_else(|| "subscriber".to_string());
 
-    let mut discovery = PassiveDiscovery::new(queue_path, reader_name, PassiveConfig::default());
+    let mut discovery =
+        SubscriberDiscovery::new(queue_path, reader_name, SubscriberConfig::default());
     let mut reader: Option<QueueReader> = None;
 
     loop {
         for event in discovery.poll(reader.as_ref())? {
             match event {
-                PassiveEvent::Connected(mut new_reader) => {
+                SubscriberEvent::Connected(mut new_reader) => {
                     new_reader.set_wait_strategy(WaitStrategy::SpinThenPark { spin_us: 10 });
                     reader = Some(new_reader);
                 }
-                PassiveEvent::Disconnected(reason) => {
+                SubscriberEvent::Disconnected(reason) => {
                     eprintln!("reader disconnected: {reason:?}");
                     reader = None;
                 }
-                PassiveEvent::Waiting => {}
+                SubscriberEvent::Waiting => {}
             }
         }
 

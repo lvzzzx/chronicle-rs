@@ -76,8 +76,8 @@ Suggested module split and APIs:
         - QueueReader::detect_disconnect(ttl) -> Option<DisconnectReason>
         - DisconnectReason enum (lock lost, heartbeat stale, segment missing)
     - chronicle-bus (optional helper, cold path):
-        - PassiveDiscovery helper that polls readiness + attempts open
-        - Emits PassiveEvent::{Connected(QueueReader), Disconnected(DisconnectReason), Waiting}
+        - SubscriberDiscovery helper that polls readiness + attempts open
+        - Emits SubscriberEvent::{Connected(QueueReader), Disconnected(DisconnectReason), Waiting}
         - Does not perform safety actions or block the hot path
     - Trading system (policy):
         - Owns the FSM and performs safety actions on disconnect

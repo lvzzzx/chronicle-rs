@@ -271,8 +271,8 @@ We intentionally split **primitives** (in `chronicle-core` / `chronicle-bus`) fr
 
 **`chronicle-bus` (optional helper, cold path):**
 
-* `PassiveDiscovery` helper that polls directory readiness + attempts open.
-* Emits `PassiveEvent::{Connected(QueueReader), Disconnected(DisconnectReason), Waiting}`
+* `SubscriberDiscovery` helper that polls directory readiness + attempts open.
+* Emits `SubscriberEvent::{Connected(QueueReader), Disconnected(DisconnectReason), Waiting}`
 * Does **not** perform safety actions or block the hot path.
 
 **Trading System (policy):**

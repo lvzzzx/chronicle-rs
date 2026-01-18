@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 use chronicle_core::{DisconnectReason, Queue, QueueReader, ReaderConfig, Result, StartMode};
 
 #[derive(Clone, Debug)]
-pub struct PassiveConfig {
+pub struct SubscriberConfig {
     pub poll_interval: Duration,
     pub writer_ttl: Duration,
     pub start_mode: StartMode,
 }
 
-impl Default for PassiveConfig {
+impl Default for SubscriberConfig {
     fn default() -> Self {
         Self {
             poll_interval: Duration::from_millis(500),
@@ -20,24 +20,24 @@ impl Default for PassiveConfig {
     }
 }
 
-pub enum PassiveEvent {
+pub enum SubscriberEvent {
     Connected(QueueReader),
     Disconnected(DisconnectReason),
     Waiting,
 }
 
-pub struct PassiveDiscovery {
+pub struct SubscriberDiscovery {
     path: PathBuf,
     reader: String,
-    config: PassiveConfig,
+    config: SubscriberConfig,
     last_poll: Option<Instant>,
 }
 
-impl PassiveDiscovery {
+impl SubscriberDiscovery {
     pub fn new(
         path: impl Into<PathBuf>,
         reader: impl Into<String>,
-        config: PassiveConfig,
+        config: SubscriberConfig,
     ) -> Self {
         Self {
             path: path.into(),
@@ -47,11 +47,11 @@ impl PassiveDiscovery {
         }
     }
 
-    pub fn poll(&mut self, current: Option<&QueueReader>) -> Result<Vec<PassiveEvent>> {
+    pub fn poll(&mut self, current: Option<&QueueReader>) -> Result<Vec<SubscriberEvent>> {
         let mut events = Vec::new();
         if let Some(reader) = current {
             if let Some(reason) = reader.detect_disconnect(self.config.writer_ttl)? {
-                events.push(PassiveEvent::Disconnected(reason));
+                events.push(SubscriberEvent::Disconnected(reason));
             }
             return Ok(events);
         }
@@ -66,8 +66,8 @@ impl PassiveDiscovery {
         reader_config.start_mode = self.config.start_mode;
 
         match Queue::try_open_subscriber_with_config(&self.path, &self.reader, reader_config)? {
-            Some(reader) => events.push(PassiveEvent::Connected(reader)),
-            None => events.push(PassiveEvent::Waiting),
+            Some(reader) => events.push(SubscriberEvent::Connected(reader)),
+            None => events.push(SubscriberEvent::Waiting),
         }
 
         Ok(events)

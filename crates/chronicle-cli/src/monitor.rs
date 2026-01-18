@@ -2,7 +2,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use chronicle_bus::{PassiveConfig, PassiveDiscovery, PassiveEvent};
+use chronicle_bus::{SubscriberConfig, SubscriberDiscovery, SubscriberEvent};
 use chronicle_core::{Clock, QuantaClock, QueueReader, StartMode};
 use clap::Args;
 use crossterm::event::{self, Event, KeyCode};
@@ -45,13 +45,13 @@ fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Res
     // We need to manage the connection state
     let mut reader: Option<QueueReader> = None;
     let connect_interval = Duration::from_millis(500);
-    let mut discovery = PassiveDiscovery::new(
+    let mut discovery = SubscriberDiscovery::new(
         args.path.clone(),
         "monitor",
-        PassiveConfig {
+        SubscriberConfig {
             poll_interval: connect_interval,
             start_mode: StartMode::ResumeLatest,
-            ..PassiveConfig::default()
+            ..SubscriberConfig::default()
         },
     );
     let mut connection_status = "Initializing...".to_string();
@@ -68,7 +68,7 @@ fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Res
             Ok(events) => {
                 for event in events {
                     match event {
-                        PassiveEvent::Connected(r) => {
+                        SubscriberEvent::Connected(r) => {
                             reader = Some(r);
                             connection_status = "Connected".to_string();
                             // Reset stats on new connection
@@ -76,11 +76,11 @@ fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Res
                             count_window = 0;
                             last_tick = Instant::now();
                         }
-                        PassiveEvent::Disconnected(reason) => {
+                        SubscriberEvent::Disconnected(reason) => {
                             reader = None;
                             connection_status = format!("Disconnected: {reason:?}");
                         }
-                        PassiveEvent::Waiting => {
+                        SubscriberEvent::Waiting => {
                             if reader.is_none() {
                                 connection_status = "Waiting for queue".to_string();
                             }
