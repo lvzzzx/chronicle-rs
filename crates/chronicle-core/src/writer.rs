@@ -89,8 +89,8 @@ impl RetentionWorker {
         Ok(Self { request_tx })
     }
 
-    fn request(&self, segment_id: u64, offset: u64) {
-        let _ = self.request_tx.try_send((segment_id, offset));
+    fn request(&self, segment_id: u64, offset: u64) -> bool {
+        self.request_tx.try_send((segment_id, offset)).is_ok()
     }
 }
 
@@ -601,10 +601,13 @@ impl QueueWriter {
             >= self.config.retention_check_bytes
             || self.last_retention_signal_time.elapsed() >= self.config.retention_check_interval
         {
-            self.retention_worker
-                .request(self.segment_id as u64, self.write_offset);
-            self.last_retention_signal_head = head_global;
-            self.last_retention_signal_time = Instant::now();
+            if self
+                .retention_worker
+                .request(self.segment_id as u64, self.write_offset)
+            {
+                self.last_retention_signal_head = head_global;
+                self.last_retention_signal_time = Instant::now();
+            }
         }
         Ok(())
     }
@@ -624,11 +627,27 @@ impl QueueWriter {
                 return Ok(());
             }
 
-            self.retention_worker
+            let _ = self
+                .retention_worker
                 .request(self.segment_id as u64, self.write_offset);
 
             match self.config.backpressure {
-                BackpressurePolicy::FailFast => return Err(Error::QueueFull),
+                BackpressurePolicy::FailFast => {
+                    let head_segment = self.segment_id as u64;
+                    let head_offset = self.write_offset;
+                    if let Ok(pos) = crate::retention::min_live_reader_position(
+                        &self.path,
+                        head_segment,
+                        head_offset,
+                        self.segment_size as u64,
+                    ) {
+                        self.min_reader_pos.store(pos, Ordering::Release);
+                        if self.has_capacity(record_len)? {
+                            return Ok(());
+                        }
+                    }
+                    return Err(Error::QueueFull);
+                }
                 BackpressurePolicy::Block {
                     timeout: _,
                     poll_interval,
