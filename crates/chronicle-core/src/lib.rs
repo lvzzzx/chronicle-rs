@@ -18,6 +18,9 @@ mod writer_lock;
 
 pub use clock::{Clock, QuantaClock, SystemClock};
 pub use error::{Error, Result};
-pub use reader::{MessageView, QueueReader, ReaderConfig, StartMode, WaitStrategy};
+pub use reader::{
+    DisconnectReason, MessageView, QueueReader, ReaderConfig, StartMode, WaitStrategy,
+    WriterStatus,
+};
 pub use writer::{BackpressurePolicy, Queue, QueueWriter, WriterConfig};
 pub use writer_lock::{lock_owner_alive, read_lock_info, WriterLockInfo};

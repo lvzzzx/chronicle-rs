@@ -62,6 +62,20 @@ pub enum StartMode {
     Earliest,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisconnectReason {
+    WriterLockLost,
+    HeartbeatStale,
+    SegmentMissing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriterStatus {
+    pub alive: bool,
+    pub last_heartbeat_ns: u64,
+    pub ttl_ns: u64,
+}
+
 impl Default for StartMode {
     fn default() -> Self {
         Self::ResumeStrict
@@ -101,18 +115,55 @@ impl Queue {
         Self::open_subscriber_with_config(path, reader, ReaderConfig::default())
     }
 
+    pub fn try_open_subscriber(
+        path: impl AsRef<std::path::Path>,
+        reader: &str,
+    ) -> Result<Option<QueueReader>> {
+        Self::try_open_subscriber_with_config(path, reader, ReaderConfig::default())
+    }
+
     pub fn open_subscriber_with_config(
         path: impl AsRef<std::path::Path>,
         reader: &str,
         config: ReaderConfig,
     ) -> Result<QueueReader> {
-        if reader.is_empty() {
-            return Err(Error::Unsupported("reader name cannot be empty"));
-        }
         let path = path.as_ref().to_path_buf();
         let control_path = path.join("control.meta");
         let control = ControlFile::open(&control_path)?;
         control.wait_ready()?;
+        Self::build_reader(path, reader, control, config)
+    }
+
+    pub fn try_open_subscriber_with_config(
+        path: impl AsRef<std::path::Path>,
+        reader: &str,
+        config: ReaderConfig,
+    ) -> Result<Option<QueueReader>> {
+        let path = path.as_ref().to_path_buf();
+        let control_path = path.join("control.meta");
+        let control = match ControlFile::open(&control_path) {
+            Ok(control) => control,
+            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None)
+            }
+            Err(err) => return Err(err),
+        };
+        if !control.check_ready()? {
+            return Ok(None);
+        }
+        let reader = Self::build_reader(path, reader, control, config)?;
+        Ok(Some(reader))
+    }
+
+    fn build_reader(
+        path: PathBuf,
+        reader: &str,
+        control: ControlFile,
+        config: ReaderConfig,
+    ) -> Result<QueueReader> {
+        if reader.is_empty() {
+            return Err(Error::Unsupported("reader name cannot be empty"));
+        }
         let segment_size = validate_segment_size(control.segment_size())?;
 
         let readers_dir = path.join(READERS_DIR);
@@ -293,6 +344,29 @@ impl QueueReader {
         self.segment_id
     }
 
+    pub fn writer_status(&self, ttl: Duration) -> Result<WriterStatus> {
+        let lock_path = self.path.join(WRITER_LOCK_FILE);
+        let lock_alive = writer_lock::writer_alive(&lock_path)?;
+        let heartbeat = self.control.writer_heartbeat_ns();
+        let ttl_ns = ttl_ns(ttl);
+        let now = now_ns()?;
+        let heartbeat_stale = heartbeat != 0 && now.saturating_sub(heartbeat) > ttl_ns;
+        let alive = lock_alive || (heartbeat != 0 && !heartbeat_stale);
+        Ok(WriterStatus {
+            alive,
+            last_heartbeat_ns: heartbeat,
+            ttl_ns,
+        })
+    }
+
+    pub fn detect_disconnect(&self, ttl: Duration) -> Result<Option<DisconnectReason>> {
+        let segment_path = segment_path(&self.path, self.segment_id as u64);
+        if !segment_path.exists() {
+            return Ok(Some(DisconnectReason::SegmentMissing));
+        }
+        self.writer_dead_reason(ttl_ns(ttl))
+    }
+
     pub(crate) fn next_ref(&mut self) -> Result<Option<MessageRef>> {
         let last_possible = (self.segment_size - HEADER_SIZE) as u64;
         loop {
@@ -409,16 +483,31 @@ impl QueueReader {
     }
 
     fn writer_dead(&self) -> Result<bool> {
+        Ok(self.writer_dead_reason(WRITER_TTL_NS)?.is_some())
+    }
+
+    fn writer_dead_reason(&self, ttl_ns: u64) -> Result<Option<DisconnectReason>> {
         let lock_path = self.path.join(WRITER_LOCK_FILE);
-        if writer_lock::writer_alive(&lock_path)? {
-            return Ok(false);
-        }
+        let lock_alive = writer_lock::writer_alive(&lock_path)?;
         let heartbeat = self.control.writer_heartbeat_ns();
+        if lock_alive {
+            if heartbeat != 0 {
+                let now = now_ns()?;
+                if now.saturating_sub(heartbeat) > ttl_ns {
+                    return Ok(Some(DisconnectReason::HeartbeatStale));
+                }
+            }
+            return Ok(None);
+        }
+
         if heartbeat == 0 {
-            return Ok(true);
+            return Ok(Some(DisconnectReason::WriterLockLost));
         }
         let now = now_ns()?;
-        Ok(now.saturating_sub(heartbeat) > WRITER_TTL_NS)
+        if now.saturating_sub(heartbeat) > ttl_ns {
+            return Ok(Some(DisconnectReason::WriterLockLost));
+        }
+        Ok(None)
     }
 }
 
@@ -435,4 +524,8 @@ fn now_ns() -> Result<u64> {
         .map_err(|_| Error::Unsupported("system time before UNIX epoch"))?;
     u64::try_from(timestamp.as_nanos())
         .map_err(|_| Error::Unsupported("system time exceeds timestamp range"))
+}
+
+fn ttl_ns(ttl: Duration) -> u64 {
+    u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX)
 }
