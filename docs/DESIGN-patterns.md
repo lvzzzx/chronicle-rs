@@ -198,3 +198,73 @@ If `WriterConfig` has `max_bytes` or `max_segments` set, `append()` performs per
 *   **Strategies:** Use Sidecar to discover dynamic Order Entry gateways or listen for risk parameter updates.
 *   **Routers:** Use Sidecar to discover new Strategy processes starting up and attaching to the bus.
 *   **Feed Handlers:** Use Sidecar to manage socket reconnections while the Hot Thread processes the ring buffer from the NIC.
+
+## Passive Discovery & Service Resilience
+
+In Ultra Low Latency (ULL) systems, components must decouple their lifecycle from their dependencies. We employ a **Passive Discovery** pattern to handle startup order and runtime failures gracefully.
+
+### 1. The Pattern
+Consumers (Readers) do not assume Producers (Writers) exist at startup. Instead, they operate a Finite State Machine (FSM):
+
+1.  **Initializing:** Load configuration.
+2.  **Connecting (Passive Wait):** Periodically poll (e.g., 500ms) for the shared memory artifacts (Control File, Writer Lock).
+    *   *Constraint:* This polling occurs on a "slow path" (separate thread or blocked state) and must never interfere with the hot path once connected.
+3.  **Connected (Hot Path):** Bind to the memory-mapped files and consume data using busy-spin or hybrid wait strategies. Zero syscalls allowed here.
+4.  **Disconnected (Failure):** If the transport is lost (file access error, writer heartbeat missing), degrade back to the **Connecting** state.
+
+### 2. Usage by Component Type
+
+Different components react differently to the `Disconnected` -> `Connecting` transition.
+
+#### A. Passive Tools (Monitors, Loggers, Archivers)
+*   **Goal:** Observability.
+*   **Behavior:** Simply display/log a "Waiting for Source" status.
+*   **Data Consistency:** It is acceptable to visualize "gaps" or simply resume from the latest data point.
+
+#### B. Trading Strategies (Critical Path)
+*   **Goal:** Profit & Safety.
+*   **Behavior:**
+    *   **Startup:** Start in `WAITING_FOR_FEED`. Do not crash if Feed Handler is down.
+    *   **On Disconnect:** **IMMEDIATE SAFETY ACTION REQUIRED.**
+        1.  **Mass Cancel:** Send `Cancel All` to execution gateways. (You are blind to the market).
+        2.  **Flatten:** Optionally close positions if risk limits dictate.
+        3.  Enter `WAITING_FOR_FEED` state.
+    *   **On Reconnect:**
+        1.  **Gap Detection:** Check if `sequence` numbers are contiguous.
+        2.  **State Rebuild:** If a gap is detected or the Writer epoch changed, **discard** live delta updates.
+        3.  **Snapshot:** Wait for a Market Snapshot message to rebuild the internal Order Book.
+        4.  Resume `TRADING` state.
+
+### 3. Implementation Example (Rust)
+
+```rust
+// Simplified FSM for a Strategy
+enum State {
+    Initializing,
+    WaitingForFeed,
+    Trading(QueueReader),
+    SafetyShutdown,
+}
+
+loop {
+    match state {
+        State::WaitingForFeed => {
+             match Queue::open_subscriber(...) {
+                 Ok(reader) => state = State::Trading(reader),
+                 Err(_) => thread::sleep(Duration::from_millis(500)),
+             }
+        }
+        State::Trading(mut reader) => {
+             match reader.next() {
+                 Ok(Some(msg)) => process(msg),
+                 Ok(None) => {}, // Busy spin
+                 Err(e) => {
+                     // CRITICAL: Feed lost!
+                     send_cancel_all(); 
+                     state = State::WaitingForFeed; 
+                 }
+             }
+        }
+    }
+}
+```
