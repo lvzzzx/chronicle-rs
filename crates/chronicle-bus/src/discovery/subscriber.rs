@@ -49,18 +49,19 @@ impl SubscriberDiscovery {
 
     pub fn poll(&mut self, current: Option<&QueueReader>) -> Result<Vec<SubscriberEvent>> {
         let mut events = Vec::new();
-        if let Some(reader) = current {
-            if let Some(reason) = reader.detect_disconnect(self.config.writer_ttl)? {
-                events.push(SubscriberEvent::Disconnected(reason));
-            }
-            return Ok(events);
-        }
 
         let now = Instant::now();
         if !self.should_poll(now) {
             return Ok(events);
         }
         self.last_poll = Some(now);
+
+        if let Some(reader) = current {
+            if let Some(reason) = reader.detect_disconnect(self.config.writer_ttl)? {
+                events.push(SubscriberEvent::Disconnected(reason));
+            }
+            return Ok(events);
+        }
 
         let mut reader_config = ReaderConfig::default();
         reader_config.start_mode = self.config.start_mode;
