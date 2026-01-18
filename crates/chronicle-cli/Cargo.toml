@@ -11,3 +11,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 chronicle-core = { path = "../chronicle-core" }
 chronicle-bus = { path = "../chronicle-bus" }
+hdrhistogram = "7.5.4"
+ratatui = "0.26.0"
+crossterm = "0.29.0"
+quanta = "0.12.6"

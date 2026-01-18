@@ -11,6 +11,8 @@ use chronicle_core::retention::retention_candidates;
 use chronicle_core::segment::{load_index, load_reader_meta, validate_segment_size};
 use chronicle_core::{lock_owner_alive, read_lock_info, Queue, WriterLockInfo};
 
+mod monitor;
+
 #[derive(Parser)]
 #[command(name = "chron-cli", version, about = "Chronicle queue tooling")]
 struct Cli {
@@ -47,6 +49,7 @@ enum Commands {
         #[arg(long = "keep")]
         keep: bool,
     },
+    Monitor(monitor::MonitorArgs),
 }
 
 fn main() {
@@ -75,6 +78,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             read,
             keep,
         } => cmd_bench(&queue_path, messages, payload_bytes, read, keep, &mut out)?,
+        Commands::Monitor(args) => {
+            monitor::run(args)?;
+        }
     }
     Ok(())
 }
