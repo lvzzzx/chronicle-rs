@@ -2,7 +2,8 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use chronicle_core::{Queue, Clock, QuantaClock, ReaderConfig, StartMode};
+use chronicle_bus::{PassiveConfig, PassiveDiscovery, PassiveEvent};
+use chronicle_core::{Clock, QuantaClock, QueueReader, StartMode};
 use clap::Args;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -42,9 +43,17 @@ pub fn run(args: MonitorArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Result<(), Box<dyn std::error::Error>> {
     // We need to manage the connection state
-    let mut reader: Option<chronicle_core::QueueReader> = None;
-    let mut last_connect_attempt = Instant::now() - Duration::from_secs(1);
+    let mut reader: Option<QueueReader> = None;
     let connect_interval = Duration::from_millis(500);
+    let mut discovery = PassiveDiscovery::new(
+        args.path.clone(),
+        "monitor",
+        PassiveConfig {
+            poll_interval: connect_interval,
+            start_mode: StartMode::ResumeLatest,
+            ..PassiveConfig::default()
+        },
+    );
     let mut connection_status = "Initializing...".to_string();
 
     let clock = QuantaClock::new();
@@ -55,29 +64,32 @@ fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Res
 
     loop {
         // 1. Connection Management
-        if reader.is_none() {
-            if last_connect_attempt.elapsed() >= connect_interval {
-                last_connect_attempt = Instant::now();
-                match Queue::open_subscriber_with_config(
-                    &args.path,
-                    "monitor",
-                    ReaderConfig {
-                        start_mode: StartMode::ResumeLatest,
-                        ..Default::default()
-                    },
-                ) {
-                    Ok(r) => {
-                        reader = Some(r);
-                        connection_status = "Connected".to_string();
-                        // Reset stats on new connection
-                        histogram.reset();
-                        count_window = 0;
-                        last_tick = Instant::now();
-                    }
-                    Err(e) => {
-                        connection_status = format!("Waiting for queue: {}", e);
+        match discovery.poll(reader.as_ref()) {
+            Ok(events) => {
+                for event in events {
+                    match event {
+                        PassiveEvent::Connected(r) => {
+                            reader = Some(r);
+                            connection_status = "Connected".to_string();
+                            // Reset stats on new connection
+                            histogram.reset();
+                            count_window = 0;
+                            last_tick = Instant::now();
+                        }
+                        PassiveEvent::Disconnected(reason) => {
+                            reader = None;
+                            connection_status = format!("Disconnected: {reason:?}");
+                        }
+                        PassiveEvent::Waiting => {
+                            if reader.is_none() {
+                                connection_status = "Waiting for queue".to_string();
+                            }
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                connection_status = format!("Discovery error: {}", e);
             }
         }
 
