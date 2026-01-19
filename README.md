@@ -183,6 +183,20 @@ cargo run -p chronicle-cli -- bench --queue-path ./cli_demo --messages 10000 --p
 
 ---
 
+## Adapters
+
+### Binance Market Feed
+Chronicle-RS includes a high-performance, standalone adapter for Binance Spot markets.
+
+```bash
+# Run the Binance feed (subscribes to BTCUSDT, ETHUSDT)
+cargo run -p chronicle-feed-binance --release -- --symbols "btcusdt,ethusdt" --queue ./data/market/binance
+```
+
+Data is written as normalized binary structs (`BookTicker`) for zero-copy consumption by strategies.
+
+---
+
 ## Configuration
 
 Chronicle-RS uses convention over configuration for directory layouts.

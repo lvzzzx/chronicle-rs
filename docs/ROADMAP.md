@@ -15,6 +15,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Phase 8 (Hardening & Benchmarks) completed; ExecPlan in `execplans/phase-8-hardening-benchmarks.md`.
 - Phase 9 (Docs, Examples & Operational Guidance) completed; examples in `crates/chronicle-bus/examples` and README quickstart added.
 - Phase 10 (CLI Tooling) completed; ExecPlan in `execplans/phase-10-cli-tooling.md`.
+- Phase 14 (Binance Market Feed) completed; ExecPlan in `execplans/phase-14-binance-feed.md`.
 
 ## Phases
 
@@ -80,3 +81,15 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Deliverables: migrate from eventfd+inotify to futex-based hybrid wait per DESIGN.md Section 5.
 - Rationale: DESIGN.md specifies `notify_seq` in `ControlBlock` with futex wake; current implementation uses eventfd. Alignment improves design/code consistency and may reduce syscall overhead.
 - Validation: readers use hybrid spin + futex; writer increments `notify_seq` and calls `futex_wake`; existing tests pass.
+
+### Phase 14 — Binance Market Feed Adapter (chronicle-feed-binance)
+- Deliverables:
+  - Standalone crate `chronicle-feed-binance`.
+  - WebSocket connection to Binance Spot API via `tokio-tungstenite`.
+  - Normalized `BookTicker` binary format for zero-copy reading.
+  - Integration with `chronicle-core` for persistence.
+  - CLI for configuration (symbols, queue path).
+- Validation:
+  - Connects to Binance and receives live data.
+  - Writes valid messages to queue.
+  - Reader can parse messages using `#[repr(C)]` struct.
