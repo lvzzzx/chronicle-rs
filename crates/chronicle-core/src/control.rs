@@ -106,6 +106,22 @@ impl ControlFile {
         Ok(())
     }
 
+    pub fn check_ready(&self) -> Result<bool> {
+        let block = self.block();
+        let state = block.init_state.load(Ordering::Acquire);
+        if state != 2 {
+            return Ok(false);
+        }
+        if block.magic.load(Ordering::Acquire) != CTRL_MAGIC {
+            return Err(Error::CorruptMetadata("control.meta magic mismatch"));
+        }
+        let version = block.version.load(Ordering::Acquire);
+        if version != CTRL_VERSION {
+            return Err(Error::UnsupportedVersion(version));
+        }
+        Ok(true)
+    }
+
     pub fn block(&self) -> &ControlBlock {
         unsafe { &*self.ptr }
     }

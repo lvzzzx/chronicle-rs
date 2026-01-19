@@ -50,6 +50,40 @@ Non-responsibilities:
 
 Guiding principle: chronicle-bus must remain a small utility layer. Anything that smells like orchestration stays outside.
 
+2.3 Passive Discovery & Service Resilience (Scope Split)
+
+We deliberately split "primitives" (in this repo) from "policy" (in the trading system). This keeps the message framework ULL-safe and reusable across different risk stacks and operating models.
+
+Why this split:
+    - Hot-path integrity: discovery/recovery loops are I/O-heavy and must stay off the hot path.
+    - Policy varies by shop: actions like Cancel All or Flatten are risk decisions, not framework defaults.
+    - Minimal, composable primitives: the framework should expose signals, not make trading decisions.
+    - Testability: state-machine behavior can be tested without coupling to risk logic.
+
+What the framework provides (primitives):
+    - Liveness / heartbeat checks for writers.
+    - Clear error signals for disconnect (lock lost, heartbeat stale, segment missing).
+    - Optional helper to poll discovery and emit state transitions without safety actions.
+
+What the trading system provides (policy):
+    - FSM ownership and state transitions.
+    - Safety actions (Cancel All / Flatten).
+    - Retry cadence, backoff, and escalation logic.
+
+Suggested module split and APIs:
+    - chronicle-core (signals only):
+        - QueueReader::writer_status(ttl) -> WriterStatus
+        - QueueReader::detect_disconnect(ttl) -> Option<DisconnectReason>
+        - DisconnectReason enum (lock lost, heartbeat stale, segment missing)
+    - chronicle-bus (optional helper, cold path):
+        - SubscriberDiscovery helper that polls readiness + attempts open
+        - Emits SubscriberEvent::{Connected(QueueReader), Disconnected(DisconnectReason), Waiting}
+        - Does not perform safety actions or block the hot path
+    - Trading system (policy):
+        - Owns the FSM and performs safety actions on disconnect
+        - Chooses cadence (fixed sleep, inotify, exponential backoff, etc.)
+        - Pins hot thread and chooses wait strategy (busy spin or hybrid)
+
 ⸻
 
 ## 3. Core Architecture

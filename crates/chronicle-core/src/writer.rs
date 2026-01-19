@@ -5,6 +5,7 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::clock::{Clock, SystemClock};
 use crate::control::ControlFile;
 use crate::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, RECORD_ALIGN};
 use crate::mmap::MmapFile;
@@ -303,7 +304,7 @@ impl AsyncSealer {
     }
 }
 
-pub struct QueueWriter {
+pub struct QueueWriter<C: Clock = SystemClock> {
     path: PathBuf,
     control: ControlFile,
     mmap: MmapFile,
@@ -319,17 +320,26 @@ pub struct QueueWriter {
     prealloc: PreallocWorker,
     async_sealer: Option<AsyncSealer>,
     _lock: WriterLock,
+    clock: C,
 }
 
 impl Queue {
-    pub fn open_publisher(path: impl AsRef<Path>) -> Result<QueueWriter> {
+    pub fn open_publisher(path: impl AsRef<Path>) -> Result<QueueWriter<SystemClock>> {
         Self::open_publisher_with_config(path, WriterConfig::default())
     }
 
     pub fn open_publisher_with_config(
         path: impl AsRef<Path>,
         config: WriterConfig,
-    ) -> Result<QueueWriter> {
+    ) -> Result<QueueWriter<SystemClock>> {
+        Self::open_publisher_with_clock(path, config, SystemClock)
+    }
+
+    pub fn open_publisher_with_clock<C: Clock>(
+        path: impl AsRef<Path>,
+        config: WriterConfig,
+        clock: C,
+    ) -> Result<QueueWriter<C>> {
         let path = path.as_ref().to_path_buf();
         std::fs::create_dir_all(&path)?;
 
@@ -459,6 +469,7 @@ impl Queue {
             prealloc,
             async_sealer,
             _lock: lock,
+            clock,
         };
 
         writer.trigger_preallocation(segment_id as u64 + 1);
@@ -466,7 +477,7 @@ impl Queue {
     }
 }
 
-impl QueueWriter {
+impl<C: Clock> QueueWriter<C> {
     fn take_preallocated(&mut self, next_segment: u64) -> Result<Option<MmapFile>> {
         self.prealloc.try_take(next_segment)
     }
@@ -526,11 +537,7 @@ impl QueueWriter {
     }
 
     pub fn append(&mut self, type_id: u16, payload: &[u8]) -> Result<()> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| Error::Unsupported("system time before UNIX epoch"))?;
-        let timestamp_ns = u64::try_from(timestamp.as_nanos())
-            .map_err(|_| Error::Unsupported("system time exceeds timestamp range"))?;
+        let timestamp_ns = self.clock.now();
         self.append_with_timestamp(type_id, payload, timestamp_ns)
     }
 

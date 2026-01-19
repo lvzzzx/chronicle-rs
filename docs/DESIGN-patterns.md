@@ -78,6 +78,32 @@ loop {
 }
 ```
 
+---
+
+## Review Notes (Concerns / Clarifications)
+
+This section captures design concerns to revisit later. It is not prescriptive guidance.
+
+1. **Hot Thread Syscalls vs `fanin.wait()`**
+   * If `fanin.wait()` performs syscalls (eventfd/epoll/clock), clarify that it is only allowed when the hot loop is idle and intentionally blocking.
+   * Otherwise the "no syscalls on hot path" rule is contradicted by the example loop.
+
+2. **Control-Plane Channel Contention**
+   * The example uses a bounded channel, which is good for backpressure.
+   * If there are multiple sidecar producers, contention can bleed into hot-path polling. Consider noting "single-producer preferred" or the tradeoff.
+
+3. **Sidecar Cadence**
+   * `sleep(Duration::from_secs(1))` implies up to 1s discovery latency.
+   * Consider making the cadence configurable or referencing event-driven mechanisms (e.g., inotify) to set expectations.
+
+4. **Prealloc Durability Semantics**
+   * "Publish via rename/link" does not specify durability.
+   * If crash-safety is required, note the fsync sequence (file, rename, directory) or explicitly say durability is out of scope.
+
+5. **Retention Atomics / Ordering**
+   * Examples use `Relaxed` loads for head/offset.
+   * If approximate values are acceptable, say so; otherwise document the required ordering to avoid accidental over-deletion.
+
 ## Sidecar Control Plane with Dedicated Workers
 
 When the control plane grows (discovery + retention + preallocation + logging), a single sidecar thread can become a bottleneck. For strict ULL systems, split the control plane into **dedicated workers** so a slow task cannot delay preallocation or interfere with roll behavior.
@@ -198,3 +224,116 @@ If `WriterConfig` has `max_bytes` or `max_segments` set, `append()` performs per
 *   **Strategies:** Use Sidecar to discover dynamic Order Entry gateways or listen for risk parameter updates.
 *   **Routers:** Use Sidecar to discover new Strategy processes starting up and attaching to the bus.
 *   **Feed Handlers:** Use Sidecar to manage socket reconnections while the Hot Thread processes the ring buffer from the NIC.
+
+## Passive Discovery & Service Resilience
+
+In Ultra Low Latency (ULL) systems, components must decouple their lifecycle from their dependencies. We employ a **Passive Discovery** pattern to handle startup order and runtime failures gracefully.
+
+### 1. The Pattern
+Consumers (Readers) do not assume Producers (Writers) exist at startup. Instead, they operate a Finite State Machine (FSM):
+
+1.  **Initializing:** Load configuration.
+2.  **Connecting (Passive Wait):** Periodically poll (e.g., 500ms) for the shared memory artifacts (Control File, Writer Lock).
+    *   *Constraint:* This polling occurs on a "slow path" (separate thread or blocked state) and must never interfere with the hot path once connected.
+3.  **Connected (Hot Path):** Bind to the memory-mapped files and consume data using busy-spin or hybrid wait strategies. Zero syscalls allowed here.
+4.  **Disconnected (Failure):** If the transport is lost (file access error, writer heartbeat missing), degrade back to the **Connecting** state.
+
+### Scope Split: What Lives Here vs. In Trading Systems
+
+We intentionally split **primitives** (in `chronicle-core` / `chronicle-bus`) from **policy** (in the trading system). This keeps the message framework ULL-safe and reusable across many strategies.
+
+**Why this split:**
+
+* **Hot-path integrity:** Discovery/recovery loops are I/O-heavy and must stay off the hot path. The core should never force blocking behavior.
+* **Policy varies by shop:** Actions like **Cancel All**, **Flatten**, or specific retry cadences are risk-policy decisions and must stay in the application.
+* **Minimal, composable primitives:** The framework should expose liveness signals and errors, not make trading decisions.
+* **Testability:** Clear separation makes state-machine behavior testable without coupling to risk logic.
+
+**What the framework provides (primitives):**
+
+* Liveness / heartbeat checks.
+* Errors or reasons for disconnect (writer lock lost, heartbeat stale, missing segment).
+* Optional helper to poll discovery and emit state transitions **without** taking safety actions.
+
+**What the trading system provides (policy):**
+
+* FSM ownership and state transitions.
+* Safety actions (Cancel All / Flatten).
+* Retry cadence and escalation logic.
+
+### Suggested Module Split and APIs
+
+**`chronicle-core` (signals only):**
+
+* `QueueReader::writer_status(ttl) -> WriterStatus`
+* `QueueReader::detect_disconnect(ttl) -> Option<DisconnectReason>`
+* `DisconnectReason` enum (e.g., lock lost, heartbeat stale, segment missing)
+
+**`chronicle-bus` (optional helper, cold path):**
+
+* `SubscriberDiscovery` helper that polls directory readiness + attempts open.
+* Emits `SubscriberEvent::{Connected(QueueReader), Disconnected(DisconnectReason), Waiting}`
+* Does **not** perform safety actions or block the hot path.
+
+**Trading System (policy):**
+
+* Owns the FSM and performs safety actions on disconnect.
+* Chooses cadence (fixed sleep, inotify, exponential backoff, etc.).
+* Pins hot thread and chooses wait strategy (busy spin or hybrid).
+
+### 2. Usage by Component Type
+
+Different components react differently to the `Disconnected` -> `Connecting` transition.
+
+#### A. Passive Tools (Monitors, Loggers, Archivers)
+*   **Goal:** Observability.
+*   **Behavior:** Simply display/log a "Waiting for Source" status.
+*   **Data Consistency:** It is acceptable to visualize "gaps" or simply resume from the latest data point.
+
+#### B. Trading Strategies (Critical Path)
+*   **Goal:** Profit & Safety.
+*   **Behavior:**
+    *   **Startup:** Start in `WAITING_FOR_FEED`. Do not crash if Feed Handler is down.
+    *   **On Disconnect:** **IMMEDIATE SAFETY ACTION REQUIRED.**
+        1.  **Mass Cancel:** Send `Cancel All` to execution gateways. (You are blind to the market).
+        2.  **Flatten:** Optionally close positions if risk limits dictate.
+        3.  Enter `WAITING_FOR_FEED` state.
+    *   **On Reconnect:**
+        1.  **Gap Detection:** Check if `sequence` numbers are contiguous.
+        2.  **State Rebuild:** If a gap is detected or the Writer epoch changed, **discard** live delta updates.
+        3.  **Snapshot:** Wait for a Market Snapshot message to rebuild the internal Order Book.
+        4.  Resume `TRADING` state.
+
+### 3. Implementation Example (Rust)
+
+```rust
+// Simplified FSM for a Strategy
+enum State {
+    Initializing,
+    WaitingForFeed,
+    Trading(QueueReader),
+    SafetyShutdown,
+}
+
+loop {
+    match state {
+        State::WaitingForFeed => {
+             match Queue::open_subscriber(...) {
+                 Ok(reader) => state = State::Trading(reader),
+                 Err(_) => thread::sleep(Duration::from_millis(500)),
+             }
+        }
+        State::Trading(mut reader) => {
+             match reader.next() {
+                 Ok(Some(msg)) => process(msg),
+                 Ok(None) => {}, // Busy spin
+                 Err(e) => {
+                     // CRITICAL: Feed lost!
+                     send_cancel_all(); 
+                     state = State::WaitingForFeed; 
+                 }
+             }
+        }
+    }
+}
+```
