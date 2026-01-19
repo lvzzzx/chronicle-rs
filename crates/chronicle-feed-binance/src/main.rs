@@ -4,9 +4,8 @@ use log::info;
 use std::path::PathBuf;
 
 use chronicle_core::Queue;
-
-mod binance;
-mod market;
+use chronicle_feed_binance::binance;
+use chronicle_feed_binance::market;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -72,13 +71,7 @@ async fn main() -> Result<()> {
     feed.run(move |type_id, event| {
         let payload_len = event.size();
         writer.append_in_place(type_id, payload_len, |buf| {
-            // Safety: We use the trait method to get a pointer, and we trust the size.
-            // Both BookTicker and Trade are repr(C).
-            let event_ptr = event.as_ptr();
-            let event_bytes = unsafe {
-                std::slice::from_raw_parts(event_ptr, payload_len)
-            };
-            buf.copy_from_slice(event_bytes);
+            event.write_to(buf);
             Ok(())
         }).map_err(|e| anyhow::anyhow!(e))
     }).await?;

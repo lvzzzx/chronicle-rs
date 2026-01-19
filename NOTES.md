@@ -26,6 +26,24 @@ In ultra-low latency (ULL) trading systems, the preferred strategy for inter-pro
 *   **Implementation:** Use `std::hint::spin_loop()` within the loop to signal the CPU it's in a busy-wait state, improving performance on some architectures without yielding to the OS.
 *   **Signal Suppression:** For hybrid paths, writers should only call `futex_wake` if a "waiter flag" in shared memory is set, keeping the happy path entirely in userspace.
 
+### Binance Diff. Depth Stream Handling
+
+When implementing the `<symbol>@depth` stream, correct local order book management requires strict adherence to the buffer-then-snapshot protocol to avoid race conditions.
+
+1.  **Protocol Flow:**
+    *   **Open Stream:** Subscribe to `wss://stream.binance.com:9443/ws/btcusdt@depth@100ms`.
+    *   **Buffer:** Start buffering *all* incoming events locally.
+    *   **Snapshot:** Fetch a full depth snapshot via REST API (`GET /api/v3/depth?symbol=BTCUSDT&limit=1000`).
+    *   **Sync:** Discard buffered events where `u` (final update ID) <= `lastUpdateId` of the snapshot.
+    *   **Playback:** The first valid event must have `U` (first update ID) <= `lastUpdateId + 1` AND `u` >= `lastUpdateId + 1`.
+    *   **Maintain:** Apply subsequent events. Ensure `new_event.U == prev_event.u + 1`. If a gap is detected, restart the process.
+
+2.  **Chronicle Integration:**
+    *   The feed adapter's primary role is to normalize and persist the *diffs* to the queue.
+    *   **Format:** `DepthHeader` (timestamps, sequence IDs) followed by packed arrays of `PriceLevel` (bids then asks).
+    *   **Zero-Copy:** Use `append_in_place` to write the variable-length payload directly to the memory-mapped segment.
+    *   **Gap Detection:** While the feed adapter *can* just passthrough data, it is recommended that it monitors the `U/u` sequence to log warnings or flag data gaps immediately.
+
 ## Codebase Gotchas
 
 ## Known Issues

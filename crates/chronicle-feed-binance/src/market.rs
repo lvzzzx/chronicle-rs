@@ -6,11 +6,32 @@ pub enum MarketMessageType {
     BookTicker = 100,
     #[allow(dead_code)]
     Trade = 101,
+    DepthUpdate = 102,
+    OrderBookSnapshot = 103,
 }
 
 pub trait Appendable {
     fn size(&self) -> usize;
-    fn as_ptr(&self) -> *const u8;
+    // Write content to the provided buffer. Buffer length is guaranteed to be self.size()
+    fn write_to(&self, buf: &mut [u8]);
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(C)]
+pub struct PriceLevel {
+    pub price: f64,
+    pub qty: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(C)]
+pub struct DepthHeader {
+    pub timestamp_ms: u64,
+    pub first_update_id: u64,
+    pub final_update_id: u64,
+    pub symbol_hash: u64,
+    pub bid_count: u32,
+    pub ask_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -28,8 +49,12 @@ impl Appendable for BookTicker {
     fn size(&self) -> usize {
         std::mem::size_of::<Self>()
     }
-    fn as_ptr(&self) -> *const u8 {
-        self as *const Self as *const u8
+    fn write_to(&self, buf: &mut [u8]) {
+        let ptr = self as *const Self as *const u8;
+        unsafe {
+            let src = std::slice::from_raw_parts(ptr, self.size());
+            buf.copy_from_slice(src);
+        }
     }
 }
 
@@ -70,8 +95,12 @@ impl Appendable for Trade {
     fn size(&self) -> usize {
         std::mem::size_of::<Self>()
     }
-    fn as_ptr(&self) -> *const u8 {
-        self as *const Self as *const u8
+    fn write_to(&self, buf: &mut [u8]) {
+        let ptr = self as *const Self as *const u8;
+        unsafe {
+            let src = std::slice::from_raw_parts(ptr, self.size());
+            buf.copy_from_slice(src);
+        }
     }
 }
 

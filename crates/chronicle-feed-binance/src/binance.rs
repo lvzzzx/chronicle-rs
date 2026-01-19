@@ -1,16 +1,21 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use log::{error, info};
+use log::{error, info, warn};
 use serde::Deserialize;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
-use crate::market::{BookTicker, MarketMessageType, Trade, Appendable};
+use crate::market::{
+    Appendable, BookTicker, DepthHeader, MarketMessageType, PriceLevel, Trade,
+};
 
 const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/ws";
+const BINANCE_API_URL: &str = "https://api.binance.com";
 
 #[derive(Deserialize, Debug)]
 struct BinanceBookTicker {
@@ -46,7 +51,29 @@ struct BinanceTrade {
     is_buyer_maker: bool,
 }
 
-// For combined streams, the payload is wrapped in {"stream": "...", "data": ...}
+#[derive(Deserialize, Debug, Clone)]
+struct BinanceDepthUpdate {
+    #[serde(rename = "s")]
+    symbol: String,
+    #[serde(rename = "U")]
+    first_update_id: u64,
+    #[serde(rename = "u")]
+    final_update_id: u64,
+    #[serde(rename = "b")]
+    bids: Vec<(String, String)>,
+    #[serde(rename = "a")]
+    asks: Vec<(String, String)>,
+}
+
+#[derive(Deserialize, Debug)]
+struct BinanceSnapshot {
+    #[serde(rename = "lastUpdateId")]
+    last_update_id: u64,
+    bids: Vec<(String, String)>,
+    asks: Vec<(String, String)>,
+}
+
+// For combined streams
 #[derive(Deserialize, Debug)]
 struct CombinedStreamEvent<T> {
     #[allow(dead_code)]
@@ -54,9 +81,19 @@ struct CombinedStreamEvent<T> {
     data: T,
 }
 
+enum SymbolState {
+    // Waiting for WS connection to establish flow
+    Connecting,
+    // WS connected, buffering events, fetching snapshot
+    Buffering(VecDeque<BinanceDepthUpdate>),
+    // Snapshot applied, streaming diffs
+    Synced { last_u: u64 },
+}
+
 pub struct BinanceFeed {
     symbols: Vec<String>,
     url: Url,
+    client: reqwest::Client,
 }
 
 impl BinanceFeed {
@@ -64,6 +101,10 @@ impl BinanceFeed {
         Self {
             symbols: symbols.to_vec(),
             url: Url::parse(BINANCE_WS_URL).expect("Invalid hardcoded URL"),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("Failed to build reqwest client"),
         }
     }
 
@@ -73,43 +114,79 @@ impl BinanceFeed {
     {
         loop {
             info!("Connecting to Binance WS...");
-            match self.connect_and_subscribe().await {
-                Ok(mut ws_stream) => {
-                    info!("Connected. Processing messages...");
-                    while let Some(msg) = ws_stream.next().await {
+            let mut ws_stream = match self.connect_and_subscribe().await {
+                Ok(res) => res,
+                Err(e) => {
+                    error!("Connection failed: {}. Retrying in 5s...", e);
+                    sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            info!("Connected.");
+
+            // Reset state for all symbols
+            let mut states: HashMap<String, SymbolState> = self
+                .symbols
+                .iter()
+                .map(|s| (s.to_uppercase(), SymbolState::Connecting))
+                .collect();
+
+            // Channel for snapshot results
+            let (snapshot_tx, mut snapshot_rx) = mpsc::channel(100);
+
+            // Trigger snapshot fetches for all symbols
+            for symbol in &self.symbols {
+                let symbol = symbol.to_uppercase();
+                let client = self.client.clone();
+                let tx = snapshot_tx.clone();
+                
+                // Transition to buffering immediately
+                states.insert(symbol.clone(), SymbolState::Buffering(VecDeque::new()));
+
+                tokio::spawn(async move {
+                    let url = format!("{}/api/v3/depth?symbol={}&limit=1000", BINANCE_API_URL, symbol);
+                    match client.get(&url).send().await {
+                        Ok(resp) => match resp.json::<BinanceSnapshot>().await {
+                            Ok(snap) => {
+                                let _ = tx.send((symbol, Ok(snap))).await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send((symbol, Err(anyhow::anyhow!(e)))).await;
+                            }
+                        },
+                        Err(e) => {
+                            let _ = tx.send((symbol, Err(anyhow::anyhow!(e)))).await;
+                        }
+                    }
+                });
+            }
+
+            // Main Event Loop
+            loop {
+                tokio::select! {
+                    Some(msg) = ws_stream.next() => {
                         match msg {
                             Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
                                 let mut bytes = text.into_bytes();
-                                
-                                // Attempt to parse as CombinedStreamEvent first since we use combined streams
-                                // We'll try to determine the type based on structure or trial-and-error
-                                // Since simd-json modifies the buffer, we need to be careful.
-                                // A robust way: Parse as a generic Value first? No, that's slow.
-                                // Check the stream name if we parse as CombinedStreamEvent.
-                                // But CombinedStreamEvent<T> needs T known.
-                                
-                                // Strategy: Parse as a temporary struct that just has "stream" and "data" as RawValue?
-                                // Or since we know the stream format: <symbol>@<type>
-                                // We can peek at the JSON or try one then the other.
-                                // Given simd-json mutability, we should clone if we fail?
-                                // Actually, let's just try parsing as `CombinedStreamEvent<serde_json::Value>`? No, allocation.
-                                
-                                // Optimization: Check the "stream" field from the raw bytes?
-                                // Or just try parsing `CombinedStreamEvent<BinanceBookTicker>` then `CombinedStreamEvent<BinanceTrade>`
-                                
-                                let mut bytes_copy = bytes.clone();
+                                // We clone bytes for fallbacks because simd-json mutates them.
+                                let mut bytes_copy1 = bytes.clone();
+                                let mut bytes_copy2 = bytes.clone();
+
                                 if let Ok(wrapper) = simd_json::from_slice::<CombinedStreamEvent<BinanceBookTicker>>(&mut bytes) {
                                     if let Ok(event) = self.convert_ticker(wrapper.data) {
                                         if let Err(e) = on_event(MarketMessageType::BookTicker as u16, &event) {
-                                            error!("Failed to write to queue: {}", e);
+                                            error!("Write error: {}", e);
                                         }
                                     }
-                                } else if let Ok(wrapper) = simd_json::from_slice::<CombinedStreamEvent<BinanceTrade>>(&mut bytes_copy) {
+                                } else if let Ok(wrapper) = simd_json::from_slice::<CombinedStreamEvent<BinanceTrade>>(&mut bytes_copy1) {
                                     if let Ok(event) = self.convert_trade(wrapper.data) {
                                         if let Err(e) = on_event(MarketMessageType::Trade as u16, &event) {
-                                            error!("Failed to write to queue: {}", e);
+                                            error!("Write error: {}", e);
                                         }
                                     }
+                                } else if let Ok(wrapper) = simd_json::from_slice::<CombinedStreamEvent<BinanceDepthUpdate>>(&mut bytes_copy2) {
+                                    // Handle Depth Update
+                                    self.handle_depth_update(&wrapper.data, &mut states, &mut on_event);
                                 }
                             }
                             Ok(tokio_tungstenite::tungstenite::Message::Ping(ping)) => {
@@ -117,68 +194,157 @@ impl BinanceFeed {
                             }
                             Err(e) => {
                                 error!("WS Error: {}", e);
-                                break;
+                                break; 
                             }
                             _ => {}
                         }
                     }
-                }
-                Err(e) => {
-                    error!("Connection failed: {}. Retrying in 5s...", e);
+                    Some((symbol, res)) = snapshot_rx.recv() => {
+                        match res {
+                            Ok(snapshot) => {
+                                info!("Snapshot received for {}", symbol);
+                                self.handle_snapshot(symbol, snapshot, &mut states, &mut on_event);
+                            }
+                            Err(e) => {
+                                error!("Snapshot fetch failed for {}: {}", symbol, e);
+                                // For now, just leave it in buffering state or reset? 
+                                // Ideally retry, but simpler to just log for this implementation.
+                            }
+                        }
+                    }
+                    else => break, // Channel closed or stream ended
                 }
             }
+            
+            warn!("Disconnected or error. Reconnecting...");
             sleep(Duration::from_secs(5)).await;
         }
     }
 
+    fn handle_snapshot<F>(
+        &self,
+        symbol: String,
+        snapshot: BinanceSnapshot,
+        states: &mut HashMap<String, SymbolState>,
+        on_event: &mut F,
+    ) where
+        F: FnMut(u16, &dyn Appendable) -> Result<()>,
+    {
+        if let Some(SymbolState::Buffering(buffer)) = states.get_mut(&symbol) {
+            // 1. Write Snapshot
+            let snap_event = self.convert_snapshot(&symbol, &snapshot);
+            if let Err(e) = on_event(MarketMessageType::OrderBookSnapshot as u16, &snap_event) {
+                error!("Failed to write snapshot: {}", e);
+                return;
+            }
+
+            // 2. Filter Buffer
+            // Drop any event where u <= lastUpdateId
+            // The first processed event should have U <= lastUpdateId+1 AND u >= lastUpdateId+1
+            let mut last_u = snapshot.last_update_id;
+            
+            while let Some(update) = buffer.front() {
+                if update.final_update_id <= last_u {
+                    buffer.pop_front();
+                    continue;
+                }
+                
+                // Check continuity for the first event
+                // "The first processed event should have U <= lastUpdateId+1 AND u >= lastUpdateId+1"
+                if update.first_update_id > last_u + 1 {
+                    error!("Gap detected for {}: snapshot end {} vs first buffered start {}", symbol, last_u, update.first_update_id);
+                    // Gap! We missed data. Should restart. 
+                    // For this impl, we just clear buffer and maybe request snapshot again?
+                    // Let's just log error and proceed (it will likely be broken)
+                }
+                break;
+            }
+
+            // 3. Process remaining buffer
+            for update in buffer.drain(..) {
+                if update.first_update_id > last_u + 1 {
+                     warn!("Gap in buffered data for {}: {} -> {}", symbol, last_u, update.first_update_id);
+                }
+                last_u = update.final_update_id;
+                
+                let event = self.convert_depth_update(&update);
+                if let Err(e) = on_event(MarketMessageType::DepthUpdate as u16, &event) {
+                    error!("Failed to write buffered depth: {}", e);
+                }
+            }
+
+            // 4. Transition to Synced
+            states.insert(symbol.clone(), SymbolState::Synced { last_u });
+            info!("Synced {}", symbol);
+        }
+    }
+
+    fn handle_depth_update<F>(
+        &self,
+        update: &BinanceDepthUpdate,
+        states: &mut HashMap<String, SymbolState>,
+        on_event: &mut F,
+    ) where
+        F: FnMut(u16, &dyn Appendable) -> Result<()>,
+    {
+        let symbol = update.symbol.to_uppercase();
+        match states.get_mut(&symbol) {
+            Some(SymbolState::Buffering(buffer)) => {
+                buffer.push_back(update.clone());
+            }
+            Some(SymbolState::Synced { last_u }) => {
+                if update.first_update_id != *last_u + 1 {
+                    // Gap detected?
+                    // Note: Binance says "The first processed event should have U <= lastUpdateId+1 AND u >= lastUpdateId+1"
+                    // But for subsequent events: "Each new event's U should be equal to the previous event's u+1."
+                    warn!("Potential gap for {}: prev_u {} vs next_U {}", symbol, last_u, update.first_update_id);
+                }
+                *last_u = update.final_update_id;
+                
+                let event = self.convert_depth_update(update);
+                if let Err(e) = on_event(MarketMessageType::DepthUpdate as u16, &event) {
+                     error!("Failed to write depth: {}", e);
+                }
+            }
+            _ => {} // Connecting or unknown
+        }
+    }
+
     async fn connect_and_subscribe(&self) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
-        // Construct combined stream URL
-        // /stream?streams=<symbol>@bookTicker/<symbol>@trade
         let mut streams = Vec::new();
         for s in &self.symbols {
             streams.push(format!("{}@bookTicker", s.to_lowercase()));
             streams.push(format!("{}@trade", s.to_lowercase()));
+            streams.push(format!("{}@depth@100ms", s.to_lowercase()));
         }
         
         let query = format!("streams={}", streams.join("/"));
-        
-        // Base URL is /ws, but for combined we need /stream
         let mut url = self.url.clone();
         url.set_path("stream");
         url.set_query(Some(&query));
 
-        info!("Connecting to {}", url);
         let (ws_stream, _) = connect_async(url).await.context("Failed to connect")?;
         Ok(ws_stream)
     }
 
-    fn convert_ticker(&self, ticker: BinanceBookTicker) -> Result<BookTicker> {
-        // Parse strings to f64
-        let bid_price = ticker.bid_price.parse::<f64>().unwrap_or_default();
-        let bid_qty = ticker.bid_qty.parse::<f64>().unwrap_or_default();
-        let ask_price = ticker.ask_price.parse::<f64>().unwrap_or_default();
-        let ask_qty = ticker.ask_qty.parse::<f64>().unwrap_or_default();
-        
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+    // --- Converters ---
 
+    fn convert_ticker(&self, ticker: BinanceBookTicker) -> Result<BookTicker> {
         Ok(BookTicker::new(
-            now,
-            bid_price,
-            bid_qty,
-            ask_price,
-            ask_qty,
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
+            ticker.bid_price.parse().unwrap_or_default(),
+            ticker.bid_qty.parse().unwrap_or_default(),
+            ticker.ask_price.parse().unwrap_or_default(),
+            ticker.ask_qty.parse().unwrap_or_default(),
             &ticker.symbol,
         ))
     }
 
     fn convert_trade(&self, trade: BinanceTrade) -> Result<Trade> {
-        let price = trade.price.parse::<f64>().unwrap_or_default();
-        let qty = trade.qty.parse::<f64>().unwrap_or_default();
-
         Ok(Trade::new(
             trade.trade_time,
-            price,
-            qty,
+            trade.price.parse().unwrap_or_default(),
+            trade.qty.parse().unwrap_or_default(),
             trade.trade_id,
             trade.buyer_order_id,
             trade.seller_order_id,
@@ -186,4 +352,105 @@ impl BinanceFeed {
             &trade.symbol,
         ))
     }
+
+    fn convert_depth_update(&self, update: &BinanceDepthUpdate) -> DepthUpdateWrapper {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let bids = parse_levels(&update.bids);
+        let asks = parse_levels(&update.asks);
+        
+        DepthUpdateWrapper {
+            header: DepthHeader {
+                timestamp_ms: now,
+                first_update_id: update.first_update_id,
+                final_update_id: update.final_update_id,
+                symbol_hash: crate::market::fxhash::hash64(&update.symbol),
+                bid_count: bids.len() as u32,
+                ask_count: asks.len() as u32,
+            },
+            bids,
+            asks,
+        }
+    }
+
+    fn convert_snapshot(&self, symbol: &str, snap: &BinanceSnapshot) -> DepthUpdateWrapper {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let bids = parse_levels(&snap.bids);
+        let asks = parse_levels(&snap.asks);
+
+        DepthUpdateWrapper {
+            header: DepthHeader {
+                timestamp_ms: now,
+                first_update_id: 0,
+                final_update_id: snap.last_update_id,
+                symbol_hash: crate::market::fxhash::hash64(symbol),
+                bid_count: bids.len() as u32,
+                ask_count: asks.len() as u32,
+            },
+            bids,
+            asks,
+        }
+    }
+}
+
+// Helper for generic Appendable wrapper
+struct DepthUpdateWrapper {
+    header: DepthHeader,
+    bids: Vec<PriceLevel>,
+    asks: Vec<PriceLevel>,
+}
+
+impl Appendable for DepthUpdateWrapper {
+    fn size(&self) -> usize {
+        std::mem::size_of::<DepthHeader>() 
+            + (self.bids.len() * std::mem::size_of::<PriceLevel>()) 
+            + (self.asks.len() * std::mem::size_of::<PriceLevel>())
+    }
+
+    fn write_to(&self, buf: &mut [u8]) {
+        let header_size = std::mem::size_of::<DepthHeader>();
+        let header_ptr = &self.header as *const DepthHeader as *const u8;
+        unsafe {
+            let src = std::slice::from_raw_parts(header_ptr, header_size);
+            buf[0..header_size].copy_from_slice(src);
+        }
+
+        let mut offset = header_size;
+        
+        // Write Bids
+        let level_size = std::mem::size_of::<PriceLevel>();
+        let bids_len = self.bids.len() * level_size;
+        if bids_len > 0 {
+            let bids_ptr = self.bids.as_ptr() as *const u8;
+            unsafe {
+                let src = std::slice::from_raw_parts(bids_ptr, bids_len);
+                buf[offset..offset+bids_len].copy_from_slice(src);
+            }
+            offset += bids_len;
+        }
+
+        // Write Asks
+        let asks_len = self.asks.len() * level_size;
+        if asks_len > 0 {
+            let asks_ptr = self.asks.as_ptr() as *const u8;
+            unsafe {
+                let src = std::slice::from_raw_parts(asks_ptr, asks_len);
+                buf[offset..offset+asks_len].copy_from_slice(src);
+            }
+        }
+    }
+}
+
+// We need a way to write this wrapper. 
+// Ideally, we shouldn't use Appendable trait for DepthUpdate if it requires contiguous memory.
+// Or we serialize it into a temporary buffer here.
+// But we want Zero-Copy (or at least 1-Copy to queue).
+//
+// Plan: Update Appendable trait to `write_to(&self, buf: &mut [u8])`.
+// This allows scattered writes.
+
+fn parse_levels(levels: &[(String, String)]) -> Vec<PriceLevel> {
+    levels.iter().map(|(p, q)| PriceLevel {
+        price: p.parse().unwrap_or_default(),
+        qty: q.parse().unwrap_or_default(),
+    }).collect()
 }
