@@ -67,6 +67,14 @@ impl MmapFile {
         Ok(&mut self.map[offset..end])
     }
 
+    pub fn range(&self, offset: usize, len: usize) -> Result<&[u8]> {
+        let end = offset.checked_add(len).ok_or(Error::Corrupt("range overflow"))?;
+        if end > self.len {
+            return Err(Error::Corrupt("range out of bounds"));
+        }
+        Ok(&self.map[offset..end])
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }

@@ -547,10 +547,34 @@ impl<C: Clock> QueueWriter<C> {
         payload: &[u8],
         timestamp_ns: u64,
     ) -> Result<()> {
-        if payload.len() > MAX_PAYLOAD_LEN {
+        self.append_in_place_with_timestamp(type_id, payload.len(), timestamp_ns, |buf| {
+            buf.copy_from_slice(payload);
+            Ok(())
+        })
+    }
+
+    pub fn append_in_place<F>(&mut self, type_id: u16, payload_len: usize, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut [u8]) -> Result<()>,
+    {
+        let timestamp_ns = self.clock.now();
+        self.append_in_place_with_timestamp(type_id, payload_len, timestamp_ns, f)
+    }
+
+    pub fn append_in_place_with_timestamp<F>(
+        &mut self,
+        type_id: u16,
+        payload_len: usize,
+        timestamp_ns: u64,
+        f: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&mut [u8]) -> Result<()>,
+    {
+        if payload_len > MAX_PAYLOAD_LEN {
             return Err(Error::PayloadTooLarge);
         }
-        let record_len = align_up(HEADER_SIZE + payload.len(), RECORD_ALIGN);
+        let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
         if record_len > self.segment_size - SEG_DATA_OFFSET {
             return Err(Error::PayloadTooLarge);
         }
@@ -561,7 +585,25 @@ impl<C: Clock> QueueWriter<C> {
             self.roll_segment()?;
         }
 
-        let checksum = MessageHeader::crc32(payload);
+        let offset = self.write_offset as usize;
+
+        // Provide payload buffer to closure first to allow it to write data
+        if payload_len > 0 {
+            let payload_buf = self.mmap.range_mut(offset + HEADER_SIZE, payload_len)?;
+            f(payload_buf)?;
+        } else {
+            // Even with 0 payload, we call f to allow it to perform any logic if needed
+            // though usually it's a no-op.
+            f(&mut [])?;
+        }
+
+        // Now calculate checksum and write header
+        let payload_buf = if payload_len > 0 {
+            self.mmap.range(offset + HEADER_SIZE, payload_len)?
+        } else {
+            &[]
+        };
+        let checksum = MessageHeader::crc32(payload_buf);
         let header = MessageHeader::new_uncommitted(
             self.seq,
             timestamp_ns,
@@ -570,17 +612,12 @@ impl<C: Clock> QueueWriter<C> {
             checksum,
         );
         let header_bytes = header.to_bytes();
-        let offset = self.write_offset as usize;
+        
         self.mmap
             .range_mut(offset, HEADER_SIZE)?
             .copy_from_slice(&header_bytes);
-        if !payload.is_empty() {
-            self.mmap
-                .range_mut(offset + HEADER_SIZE, payload.len())?
-                .copy_from_slice(payload);
-        }
 
-        let commit_len = MessageHeader::commit_len_for_payload(payload.len())?;
+        let commit_len = MessageHeader::commit_len_for_payload(payload_len)?;
         let header_ptr = unsafe { self.mmap.as_mut_slice().as_mut_ptr().add(offset) };
         MessageHeader::store_commit_len(header_ptr, commit_len);
 

@@ -22,12 +22,26 @@ struct Args {
     /// Comma-separated list of symbols to subscribe (e.g., btcusdt,ethusdt)
     #[arg(short, long, default_value = "btcusdt,ethusdt,solusdt")]
     symbols: String,
+
+    /// CPU core to pin the process to
+    #[arg(long)]
+    core_id: Option<usize>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
+
+    if let Some(core_id) = args.core_id {
+        let core_ids = core_affinity::get_core_ids().context("Failed to get core IDs")?;
+        if core_id < core_ids.len() {
+            info!("Pinning process to core {}", core_id);
+            core_affinity::set_for_current(core_ids[core_id]);
+        } else {
+            anyhow::bail!("Core ID {} out of range ({} cores available)", core_id, core_ids.len());
+        }
+    }
 
     let queue_path = if let Some(path) = args.queue {
         path
@@ -54,14 +68,19 @@ async fn main() -> Result<()> {
     let feed = binance::BinanceFeed::new(&symbols);
 
     // Start the feed
-    // We pass a closure that writes to the queue
-    feed.run(move |type_id, data| {
-        // This closure is called for every market event
-        // Note: Chronicle writer is not thread-safe, but run() is currently single-threaded in its processing loop
-        // If we parallelize, we need a mutex or multiple writers.
-        // Since we are inside a single-threaded async loop (conceptually), we can just call append.
-        // However, 'writer' needs to be mutable.
-        writer.append(type_id, data).map_err(|e| anyhow::anyhow!(e))
+    // We pass a closure that writes to the queue using zero-copy append_in_place
+    feed.run(move |type_id, event| {
+        let payload_len = event.size();
+        writer.append_in_place(type_id, payload_len, |buf| {
+            // Safety: We use the trait method to get a pointer, and we trust the size.
+            // Both BookTicker and Trade are repr(C).
+            let event_ptr = event.as_ptr();
+            let event_bytes = unsafe {
+                std::slice::from_raw_parts(event_ptr, payload_len)
+            };
+            buf.copy_from_slice(event_bytes);
+            Ok(())
+        }).map_err(|e| anyhow::anyhow!(e))
     }).await?;
 
     Ok(())
