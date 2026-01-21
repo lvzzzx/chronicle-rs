@@ -70,11 +70,15 @@ async fn main() -> Result<()> {
     // We pass a closure that writes to the queue using zero-copy append_in_place
     feed.run(move |type_id, event| {
         let payload_len = event.size();
-        writer.append_in_place(type_id, payload_len, |buf| {
-            event.write_to(buf);
-            Ok(())
-        }).map_err(|e| anyhow::anyhow!(e))
-    }).await?;
+        let timestamp_ns = event.timestamp_ns();
+        writer
+            .append_in_place_with_timestamp(type_id, payload_len, timestamp_ns, |buf| {
+                event.write_to(buf);
+                Ok(())
+            })
+            .map_err(|e| anyhow::anyhow!(e))
+    })
+    .await?;
 
     Ok(())
 }

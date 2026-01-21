@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info, warn};
 use serde::Deserialize;
@@ -10,8 +10,10 @@ use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
-use crate::market::{
-    Appendable, BookTicker, DepthHeader, MarketMessageType, PriceLevel, Trade,
+use crate::market::{fxhash, market_id, Appendable};
+use chronicle_protocol::{
+    book_flags, BookEventHeader, BookEventType, BookMode, BookTicker, L2Diff, L2Snapshot,
+    PriceLevelUpdate, Trade, TypeId, PROTOCOL_VERSION,
 };
 
 const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/ws";
@@ -157,13 +159,13 @@ impl BinanceFeed {
 
                                 if let Ok(wrapper) = simd_json::from_slice::<CombinedStreamEvent<BinanceBookTicker>>(&mut bytes) {
                                     if let Ok(event) = self.convert_ticker(wrapper.data) {
-                                        if let Err(e) = on_event(MarketMessageType::BookTicker as u16, &event) {
+                                        if let Err(e) = on_event(TypeId::BookTicker.as_u16(), &event) {
                                             error!("Write error: {}", e);
                                         }
                                     }
                                 } else if let Ok(wrapper) = simd_json::from_slice::<CombinedStreamEvent<BinanceTrade>>(&mut bytes_copy1) {
                                     if let Ok(event) = self.convert_trade(wrapper.data) {
-                                        if let Err(e) = on_event(MarketMessageType::Trade as u16, &event) {
+                                        if let Err(e) = on_event(TypeId::Trade.as_u16(), &event) {
                                             error!("Write error: {}", e);
                                         }
                                     }
@@ -266,8 +268,15 @@ impl BinanceFeed {
                     }
 
                     // 1. Write Snapshot
-                    let snap_event = self.convert_snapshot(&symbol, &snapshot);
-                    if let Err(e) = on_event(MarketMessageType::OrderBookSnapshot as u16, &snap_event) {
+                    let snap_event = match self.convert_snapshot(&symbol, &snapshot) {
+                        Ok(event) => event,
+                        Err(e) => {
+                            error!("Failed to build snapshot event: {}", e);
+                            states.insert(symbol, SymbolState::Buffering(buffer));
+                            return;
+                        }
+                    };
+                    if let Err(e) = on_event(TypeId::BookEvent.as_u16(), &snap_event) {
                         error!("Failed to write snapshot: {}", e);
                         states.insert(symbol, SymbolState::Buffering(buffer));
                         return;
@@ -276,9 +285,15 @@ impl BinanceFeed {
                     // 2. Process remaining buffer
                     for update in buffer.drain(..) {
                         last_u = update.final_update_id;
-                        let event = self.convert_depth_update(&update);
-                        if let Err(e) = on_event(MarketMessageType::DepthUpdate as u16, &event) {
-                            error!("Failed to write buffered depth: {}", e);
+                        match self.convert_depth_update(&update) {
+                            Ok(event) => {
+                                if let Err(e) = on_event(TypeId::BookEvent.as_u16(), &event) {
+                                    error!("Failed to write buffered depth: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to build buffered depth event: {}", e);
+                            }
                         }
                     }
 
@@ -322,9 +337,15 @@ impl BinanceFeed {
                         return;
                     }
 
-                    let event = self.convert_depth_update(update);
-                    if let Err(e) = on_event(MarketMessageType::DepthUpdate as u16, &event) {
-                        error!("Failed to write depth: {}", e);
+                    match self.convert_depth_update(update) {
+                        Ok(event) => {
+                            if let Err(e) = on_event(TypeId::BookEvent.as_u16(), &event) {
+                                error!("Failed to write depth: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to build depth event: {}", e);
+                        }
                     }
                     states.insert(symbol, SymbolState::Synced { last_u: update.final_update_id });
                 }
@@ -380,127 +401,279 @@ impl BinanceFeed {
     // --- Converters ---
 
     fn convert_ticker(&self, ticker: BinanceBookTicker) -> Result<BookTicker> {
-        Ok(BookTicker::new(
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
-            ticker.bid_price.parse().unwrap_or_default(),
-            ticker.bid_qty.parse().unwrap_or_default(),
-            ticker.ask_price.parse().unwrap_or_default(),
-            ticker.ask_qty.parse().unwrap_or_default(),
-            &ticker.symbol,
-        ))
+        let now_ns = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
+        Ok(BookTicker {
+            timestamp_ns: now_ns,
+            bid_price: ticker.bid_price.parse().unwrap_or_default(),
+            bid_qty: ticker.bid_qty.parse().unwrap_or_default(),
+            ask_price: ticker.ask_price.parse().unwrap_or_default(),
+            ask_qty: ticker.ask_qty.parse().unwrap_or_default(),
+            symbol_hash: fxhash::hash64(&ticker.symbol),
+        })
     }
 
     fn convert_trade(&self, trade: BinanceTrade) -> Result<Trade> {
-        Ok(Trade::new(
-            trade.trade_time,
-            trade.price.parse().unwrap_or_default(),
-            trade.qty.parse().unwrap_or_default(),
-            trade.trade_id,
-            trade.buyer_order_id,
-            trade.seller_order_id,
-            trade.is_buyer_maker,
-            &trade.symbol,
-        ))
+        Ok(Trade {
+            timestamp_ns: trade.trade_time.saturating_mul(1_000_000),
+            price: trade.price.parse().unwrap_or_default(),
+            qty: trade.qty.parse().unwrap_or_default(),
+            trade_id: trade.trade_id,
+            buyer_order_id: trade.buyer_order_id,
+            seller_order_id: trade.seller_order_id,
+            is_buyer_maker: trade.is_buyer_maker,
+            _pad0: [0u8; 7],
+            symbol_hash: fxhash::hash64(&trade.symbol),
+        })
     }
 
-    fn convert_depth_update(&self, update: &BinanceDepthUpdate) -> DepthUpdateWrapper {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-        let bids = parse_levels(&update.bids);
-        let asks = parse_levels(&update.asks);
-        
-        DepthUpdateWrapper {
-            header: DepthHeader {
-                timestamp_ms: now,
-                first_update_id: update.first_update_id,
-                final_update_id: update.final_update_id,
-                symbol_hash: crate::market::fxhash::hash64(&update.symbol),
+    fn convert_depth_update(&self, update: &BinanceDepthUpdate) -> Result<L2DiffEvent> {
+        let now_ns = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
+        let (price_scale, size_scale) = max_scales(&update.bids, &update.asks);
+        let bids = parse_levels(&update.bids, price_scale, size_scale);
+        let asks = parse_levels(&update.asks, price_scale, size_scale);
+        let record_len = book_event_len::<L2Diff>(bids.len(), asks.len())?;
+
+        let bid_count = u16::try_from(bids.len())
+            .map_err(|_| anyhow::anyhow!("bid_count exceeds u16"))?;
+        let ask_count = u16::try_from(asks.len())
+            .map_err(|_| anyhow::anyhow!("ask_count exceeds u16"))?;
+
+        Ok(L2DiffEvent {
+            header: BookEventHeader {
+                schema_version: PROTOCOL_VERSION,
+                record_len,
+                endianness: 0,
+                _pad0: 0,
+                venue_id: VENUE_ID_BINANCE,
+                market_id: market_id(&update.symbol),
+                stream_id: 0,
+                ingest_ts_ns: now_ns,
+                exchange_ts_ns: now_ns,
+                seq: 0,
+                native_seq: update.final_update_id,
+                event_type: BookEventType::Diff as u8,
+                book_mode: BookMode::L2 as u8,
+                flags: 0,
+                _pad1: 0,
+            },
+            diff: L2Diff {
+                update_id_first: update.first_update_id,
+                update_id_last: update.final_update_id,
+                update_id_prev: 0,
+                price_scale,
+                size_scale,
+                flags: book_flags::ABSOLUTE,
+                bid_count,
+                ask_count,
+            },
+            bids,
+            asks,
+        })
+    }
+
+    fn convert_snapshot(&self, symbol: &str, snap: &BinanceSnapshot) -> Result<L2SnapshotEvent> {
+        let now_ns = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
+        let (price_scale, size_scale) = max_scales(&snap.bids, &snap.asks);
+        let bids = parse_levels(&snap.bids, price_scale, size_scale);
+        let asks = parse_levels(&snap.asks, price_scale, size_scale);
+        let record_len = book_event_len::<L2Snapshot>(bids.len(), asks.len())?;
+
+        Ok(L2SnapshotEvent {
+            header: BookEventHeader {
+                schema_version: PROTOCOL_VERSION,
+                record_len,
+                endianness: 0,
+                _pad0: 0,
+                venue_id: VENUE_ID_BINANCE,
+                market_id: market_id(symbol),
+                stream_id: 0,
+                ingest_ts_ns: now_ns,
+                exchange_ts_ns: now_ns,
+                seq: 0,
+                native_seq: snap.last_update_id,
+                event_type: BookEventType::Snapshot as u8,
+                book_mode: BookMode::L2 as u8,
+                flags: 0,
+                _pad1: 0,
+            },
+            snapshot: L2Snapshot {
+                price_scale,
+                size_scale,
+                _pad0: 0,
                 bid_count: bids.len() as u32,
                 ask_count: asks.len() as u32,
             },
             bids,
             asks,
-        }
-    }
-
-    fn convert_snapshot(&self, symbol: &str, snap: &BinanceSnapshot) -> DepthUpdateWrapper {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-        let bids = parse_levels(&snap.bids);
-        let asks = parse_levels(&snap.asks);
-
-        DepthUpdateWrapper {
-            header: DepthHeader {
-                timestamp_ms: now,
-                first_update_id: 0,
-                final_update_id: snap.last_update_id,
-                symbol_hash: crate::market::fxhash::hash64(symbol),
-                bid_count: bids.len() as u32,
-                ask_count: asks.len() as u32,
-            },
-            bids,
-            asks,
-        }
+        })
     }
 }
 
-// Helper for generic Appendable wrapper
-struct DepthUpdateWrapper {
-    header: DepthHeader,
-    bids: Vec<PriceLevel>,
-    asks: Vec<PriceLevel>,
+const VENUE_ID_BINANCE: u16 = 1;
+
+struct L2DiffEvent {
+    header: BookEventHeader,
+    diff: L2Diff,
+    bids: Vec<PriceLevelUpdate>,
+    asks: Vec<PriceLevelUpdate>,
 }
 
-impl Appendable for DepthUpdateWrapper {
+struct L2SnapshotEvent {
+    header: BookEventHeader,
+    snapshot: L2Snapshot,
+    bids: Vec<PriceLevelUpdate>,
+    asks: Vec<PriceLevelUpdate>,
+}
+
+impl Appendable for L2DiffEvent {
     fn size(&self) -> usize {
-        std::mem::size_of::<DepthHeader>() 
-            + (self.bids.len() * std::mem::size_of::<PriceLevel>()) 
-            + (self.asks.len() * std::mem::size_of::<PriceLevel>())
+        std::mem::size_of::<BookEventHeader>()
+            + std::mem::size_of::<L2Diff>()
+            + (self.bids.len() + self.asks.len()) * std::mem::size_of::<PriceLevelUpdate>()
     }
 
     fn write_to(&self, buf: &mut [u8]) {
-        let header_size = std::mem::size_of::<DepthHeader>();
-        let header_ptr = &self.header as *const DepthHeader as *const u8;
-        unsafe {
-            let src = std::slice::from_raw_parts(header_ptr, header_size);
-            buf[0..header_size].copy_from_slice(src);
-        }
+        write_struct(buf, 0, &self.header);
+        let mut offset = std::mem::size_of::<BookEventHeader>();
+        write_struct(buf, offset, &self.diff);
+        offset += std::mem::size_of::<L2Diff>();
+        offset = write_levels(buf, offset, &self.bids);
+        let _ = write_levels(buf, offset, &self.asks);
+    }
 
-        let mut offset = header_size;
-        
-        // Write Bids
-        let level_size = std::mem::size_of::<PriceLevel>();
-        let bids_len = self.bids.len() * level_size;
-        if bids_len > 0 {
-            let bids_ptr = self.bids.as_ptr() as *const u8;
-            unsafe {
-                let src = std::slice::from_raw_parts(bids_ptr, bids_len);
-                buf[offset..offset+bids_len].copy_from_slice(src);
-            }
-            offset += bids_len;
-        }
-
-        // Write Asks
-        let asks_len = self.asks.len() * level_size;
-        if asks_len > 0 {
-            let asks_ptr = self.asks.as_ptr() as *const u8;
-            unsafe {
-                let src = std::slice::from_raw_parts(asks_ptr, asks_len);
-                buf[offset..offset+asks_len].copy_from_slice(src);
-            }
-        }
+    fn timestamp_ns(&self) -> u64 {
+        self.header.ingest_ts_ns
     }
 }
 
-// We need a way to write this wrapper. 
-// Ideally, we shouldn't use Appendable trait for DepthUpdate if it requires contiguous memory.
-// Or we serialize it into a temporary buffer here.
-// But we want Zero-Copy (or at least 1-Copy to queue).
-//
-// Plan: Update Appendable trait to `write_to(&self, buf: &mut [u8])`.
-// This allows scattered writes.
+impl Appendable for L2SnapshotEvent {
+    fn size(&self) -> usize {
+        std::mem::size_of::<BookEventHeader>()
+            + std::mem::size_of::<L2Snapshot>()
+            + (self.bids.len() + self.asks.len()) * std::mem::size_of::<PriceLevelUpdate>()
+    }
 
-fn parse_levels(levels: &[(String, String)]) -> Vec<PriceLevel> {
-    levels.iter().map(|(p, q)| PriceLevel {
-        price: p.parse().unwrap_or_default(),
-        qty: q.parse().unwrap_or_default(),
-    }).collect()
+    fn write_to(&self, buf: &mut [u8]) {
+        write_struct(buf, 0, &self.header);
+        let mut offset = std::mem::size_of::<BookEventHeader>();
+        write_struct(buf, offset, &self.snapshot);
+        offset += std::mem::size_of::<L2Snapshot>();
+        offset = write_levels(buf, offset, &self.bids);
+        let _ = write_levels(buf, offset, &self.asks);
+    }
+
+    fn timestamp_ns(&self) -> u64 {
+        self.header.ingest_ts_ns
+    }
 }
+
+fn write_struct<T>(buf: &mut [u8], offset: usize, value: &T) {
+    let size = std::mem::size_of::<T>();
+    let ptr = value as *const T as *const u8;
+    unsafe {
+        let src = std::slice::from_raw_parts(ptr, size);
+        buf[offset..offset + size].copy_from_slice(src);
+    }
+}
+
+fn write_levels(
+    buf: &mut [u8],
+    mut offset: usize,
+    levels: &[PriceLevelUpdate],
+) -> usize {
+    let size = levels.len() * std::mem::size_of::<PriceLevelUpdate>();
+    if size == 0 {
+        return offset;
+    }
+    let ptr = levels.as_ptr() as *const u8;
+    unsafe {
+        let src = std::slice::from_raw_parts(ptr, size);
+        buf[offset..offset + size].copy_from_slice(src);
+    }
+    offset += size;
+    offset
+}
+
+fn book_event_len<T>(bid_len: usize, ask_len: usize) -> Result<u16> {
+    let total = std::mem::size_of::<BookEventHeader>()
+        + std::mem::size_of::<T>()
+        + (bid_len + ask_len) * std::mem::size_of::<PriceLevelUpdate>();
+    u16::try_from(total).map_err(|_| anyhow::anyhow!("BookEvent record_len exceeds u16"))
+}
+
+fn max_scales(bids: &[(String, String)], asks: &[(String, String)]) -> (u8, u8) {
+    let mut price_scale = 0u8;
+    let mut size_scale = 0u8;
+    for (p, q) in bids.iter().chain(asks.iter()) {
+        price_scale = price_scale.max(decimal_scale(p));
+        size_scale = size_scale.max(decimal_scale(q));
+    }
+    (price_scale, size_scale)
+}
+
+fn decimal_scale(value: &str) -> u8 {
+    let Some((_, frac)) = value.split_once('.') else {
+        return 0;
+    };
+    let trimmed = frac.trim_end_matches('0');
+    let len = trimmed.len();
+    u8::try_from(len.min(18)).unwrap_or(18)
+}
+
+fn parse_levels(
+    levels: &[(String, String)],
+    price_scale: u8,
+    size_scale: u8,
+) -> Vec<PriceLevelUpdate> {
+    levels
+        .iter()
+        .map(|(p, q)| PriceLevelUpdate {
+            price: parse_fixed(p, price_scale),
+            size: parse_fixed(q, size_scale),
+        })
+        .collect()
+}
+
+fn parse_fixed(value: &str, scale: u8) -> u64 {
+    let scale = scale.min(18);
+    let pow10 = POW10[scale as usize];
+    let mut iter = value.splitn(2, '.');
+    let int_part = iter.next().unwrap_or("0");
+    let frac_part = iter.next().unwrap_or("");
+    let frac_trimmed = frac_part.trim_end_matches('0');
+
+    let int_val = int_part.parse::<u128>().unwrap_or(0);
+    let mut frac_val = 0u128;
+    let mut frac_len = 0usize;
+    if !frac_trimmed.is_empty() {
+        frac_len = frac_trimmed.len().min(scale as usize);
+        frac_val = frac_trimmed[..frac_len].parse::<u128>().unwrap_or(0);
+    }
+
+    let scaled = int_val
+        .saturating_mul(pow10 as u128)
+        .saturating_add(frac_val.saturating_mul(POW10[(scale as usize).saturating_sub(frac_len)] as u128));
+    scaled.min(u64::MAX as u128) as u64
+}
+
+const POW10: [u64; 19] = [
+    1,
+    10,
+    100,
+    1_000,
+    10_000,
+    100_000,
+    1_000_000,
+    10_000_000,
+    100_000_000,
+    1_000_000_000,
+    10_000_000_000,
+    100_000_000_000,
+    1_000_000_000_000,
+    10_000_000_000_000,
+    100_000_000_000_000,
+    1_000_000_000_000_000,
+    10_000_000_000_000_000,
+    100_000_000_000_000_000,
+    1_000_000_000_000_000_000,
+];

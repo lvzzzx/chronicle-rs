@@ -7,8 +7,10 @@ pub const PROTOCOL_VERSION: u16 = 1;
 pub enum TypeId {
     /// Canonical order book replay events (BookEventHeader + payload).
     BookEvent = 0x1000,
-    /// Canonical trade events (future use).
-    TradeEvent = 0x1001,
+    /// Book ticker updates (best bid/ask).
+    BookTicker = 0x1001,
+    /// Trade events.
+    Trade = 0x1002,
 }
 
 impl TypeId {
@@ -58,6 +60,31 @@ pub struct BookEventHeader {
     pub book_mode: u8,
     pub flags: u16,
     pub _pad1: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BookTicker {
+    pub timestamp_ns: u64,
+    pub bid_price: f64,
+    pub bid_qty: f64,
+    pub ask_price: f64,
+    pub ask_qty: f64,
+    pub symbol_hash: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Trade {
+    pub timestamp_ns: u64,
+    pub price: f64,
+    pub qty: f64,
+    pub trade_id: u64,
+    pub buyer_order_id: u64,
+    pub seller_order_id: u64,
+    pub is_buyer_maker: bool,
+    pub _pad0: [u8; 7],
+    pub symbol_hash: u64,
 }
 
 #[repr(C)]
@@ -128,5 +155,15 @@ mod tests {
     #[test]
     fn price_level_update_size() {
         assert_eq!(size_of::<PriceLevelUpdate>(), 16);
+    }
+
+    #[test]
+    fn book_ticker_size() {
+        assert_eq!(size_of::<BookTicker>(), 48);
+    }
+
+    #[test]
+    fn trade_size() {
+        assert_eq!(size_of::<Trade>(), 64);
     }
 }

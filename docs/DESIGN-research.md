@@ -150,7 +150,7 @@ pub struct BookEventHeader {
 ```
 
 **Notes:**
-- `seq` is the strict replay ordering key.
+- `seq` is the strict replay ordering key when populated; if set to 0, use `MessageHeader.seq` as canonical.
 - `native_seq` preserves venue ordering semantics for validation.
 - All fixed-point numbers below must include an implied scale (per stream or per event).
 
@@ -307,18 +307,22 @@ Offset  Size  Field
 
 ```
 L2Diff
-  [0x0000..0x0013]  L2Diff header (20 bytes)
-  [0x0014..]        PriceLevelUpdate array (bid_count + ask_count entries)
+  [0x0000..0x001F]  L2Diff header (32 bytes)
+  [0x0020..]        PriceLevelUpdate array (bid_count + ask_count entries)
 ```
 
-L2Diff header (20 bytes):
+L2Diff header (32 bytes):
 
 ```
 Offset  Size  Field
 0x0000  8     update_id_first (U)
 0x0008  8     update_id_last  (u)
-0x0010  2     bid_count
-0x0012  2     ask_count
+0x0010  8     update_id_prev  (pu)
+0x0018  1     price_scale
+0x0019  1     size_scale
+0x001A  2     flags (ABSOLUTE/DELTA)
+0x001C  2     bid_count
+0x001E  2     ask_count
 ```
 
 PriceLevelUpdate (16 bytes each):
@@ -330,8 +334,7 @@ Offset  Size  Field
 ```
 
 **Notes:**
-- If you need `update_id_prev`, add it to the L2Diff header and adjust offsets.
-- If you need `price_scale`/`size_scale`, add them to the L2Diff header or store them in stream metadata.
+- `price_scale`/`size_scale` are per-event to preserve exact decimal precision.
 - `record_len` in `BookEventHeader` must match `56 + payload_len`.
 - `commit_len` in `MessageHeader` must match `record_len + 1`.
 
