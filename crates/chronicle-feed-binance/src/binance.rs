@@ -16,6 +16,7 @@ use crate::market::{
 
 const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/ws";
 const BINANCE_API_URL: &str = "https://api.binance.com";
+const SNAPSHOT_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Deserialize, Debug)]
 struct BinanceBookTicker {
@@ -137,28 +138,10 @@ impl BinanceFeed {
             // Trigger snapshot fetches for all symbols
             for symbol in &self.symbols {
                 let symbol = symbol.to_uppercase();
-                let client = self.client.clone();
-                let tx = snapshot_tx.clone();
                 
                 // Transition to buffering immediately
                 states.insert(symbol.clone(), SymbolState::Buffering(VecDeque::new()));
-
-                tokio::spawn(async move {
-                    let url = format!("{}/api/v3/depth?symbol={}&limit=1000", BINANCE_API_URL, symbol);
-                    match client.get(&url).send().await {
-                        Ok(resp) => match resp.json::<BinanceSnapshot>().await {
-                            Ok(snap) => {
-                                let _ = tx.send((symbol, Ok(snap))).await;
-                            }
-                            Err(e) => {
-                                let _ = tx.send((symbol, Err(anyhow::anyhow!(e)))).await;
-                            }
-                        },
-                        Err(e) => {
-                            let _ = tx.send((symbol, Err(anyhow::anyhow!(e)))).await;
-                        }
-                    }
-                });
+                self.request_snapshot(&symbol, &snapshot_tx, Duration::ZERO);
             }
 
             // Main Event Loop
@@ -186,7 +169,7 @@ impl BinanceFeed {
                                     }
                                 } else if let Ok(wrapper) = simd_json::from_slice::<CombinedStreamEvent<BinanceDepthUpdate>>(&mut bytes_copy2) {
                                     // Handle Depth Update
-                                    self.handle_depth_update(&wrapper.data, &mut states, &mut on_event);
+                                    self.handle_depth_update(&wrapper.data, &mut states, &mut on_event, &snapshot_tx);
                                 }
                             }
                             Ok(tokio_tungstenite::tungstenite::Message::Ping(ping)) => {
@@ -203,12 +186,22 @@ impl BinanceFeed {
                         match res {
                             Ok(snapshot) => {
                                 info!("Snapshot received for {}", symbol);
-                                self.handle_snapshot(symbol, snapshot, &mut states, &mut on_event);
+                                self.handle_snapshot(symbol, snapshot, &mut states, &mut on_event, &snapshot_tx);
                             }
                             Err(e) => {
                                 error!("Snapshot fetch failed for {}: {}", symbol, e);
-                                // For now, just leave it in buffering state or reset? 
-                                // Ideally retry, but simpler to just log for this implementation.
+                                if let Some(state) = states.remove(&symbol) {
+                                    match state {
+                                        SymbolState::Buffering(mut buffer) => {
+                                            buffer.clear();
+                                            states.insert(symbol.clone(), SymbolState::Buffering(buffer));
+                                            self.request_snapshot(&symbol, &snapshot_tx, SNAPSHOT_RETRY_DELAY);
+                                        }
+                                        other => {
+                                            states.insert(symbol, other);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -227,55 +220,76 @@ impl BinanceFeed {
         snapshot: BinanceSnapshot,
         states: &mut HashMap<String, SymbolState>,
         on_event: &mut F,
+        snapshot_tx: &mpsc::Sender<(String, Result<BinanceSnapshot>)>,
     ) where
         F: FnMut(u16, &dyn Appendable) -> Result<()>,
     {
-        if let Some(SymbolState::Buffering(buffer)) = states.get_mut(&symbol) {
-            // 1. Write Snapshot
-            let snap_event = self.convert_snapshot(&symbol, &snapshot);
-            if let Err(e) = on_event(MarketMessageType::OrderBookSnapshot as u16, &snap_event) {
-                error!("Failed to write snapshot: {}", e);
-                return;
-            }
+        if let Some(state) = states.remove(&symbol) {
+            match state {
+                SymbolState::Buffering(mut buffer) => {
+                    let mut last_u = snapshot.last_update_id;
 
-            // 2. Filter Buffer
-            // Drop any event where u <= lastUpdateId
-            // The first processed event should have U <= lastUpdateId+1 AND u >= lastUpdateId+1
-            let mut last_u = snapshot.last_update_id;
-            
-            while let Some(update) = buffer.front() {
-                if update.final_update_id <= last_u {
-                    buffer.pop_front();
-                    continue;
-                }
-                
-                // Check continuity for the first event
-                // "The first processed event should have U <= lastUpdateId+1 AND u >= lastUpdateId+1"
-                if update.first_update_id > last_u + 1 {
-                    error!("Gap detected for {}: snapshot end {} vs first buffered start {}", symbol, last_u, update.first_update_id);
-                    // Gap! We missed data. Should restart. 
-                    // For this impl, we just clear buffer and maybe request snapshot again?
-                    // Let's just log error and proceed (it will likely be broken)
-                }
-                break;
-            }
+                    // Drop any event where u <= lastUpdateId
+                    while let Some(update) = buffer.front() {
+                        if update.final_update_id <= last_u {
+                            buffer.pop_front();
+                        } else {
+                            break;
+                        }
+                    }
 
-            // 3. Process remaining buffer
-            for update in buffer.drain(..) {
-                if update.first_update_id > last_u + 1 {
-                     warn!("Gap in buffered data for {}: {} -> {}", symbol, last_u, update.first_update_id);
+                    // Validate continuity before publishing snapshot.
+                    let mut gap_detected = None;
+                    if let Some(first) = buffer.front() {
+                        if first.first_update_id > last_u + 1 {
+                            gap_detected = Some((last_u, first.first_update_id));
+                        } else {
+                            let mut expected_last_u = first.final_update_id;
+                            for update in buffer.iter().skip(1) {
+                                if update.first_update_id != expected_last_u + 1 {
+                                    gap_detected = Some((expected_last_u, update.first_update_id));
+                                    break;
+                                }
+                                expected_last_u = update.final_update_id;
+                            }
+                        }
+                    }
+
+                    if let Some((prev_u, next_u)) = gap_detected {
+                        warn!(
+                            "Gap detected for {} during snapshot replay: prev_u {} vs next_U {}. Resyncing.",
+                            symbol, prev_u, next_u
+                        );
+                        states.insert(symbol.clone(), SymbolState::Buffering(buffer));
+                        self.request_snapshot(&symbol, snapshot_tx, SNAPSHOT_RETRY_DELAY);
+                        return;
+                    }
+
+                    // 1. Write Snapshot
+                    let snap_event = self.convert_snapshot(&symbol, &snapshot);
+                    if let Err(e) = on_event(MarketMessageType::OrderBookSnapshot as u16, &snap_event) {
+                        error!("Failed to write snapshot: {}", e);
+                        states.insert(symbol, SymbolState::Buffering(buffer));
+                        return;
+                    }
+
+                    // 2. Process remaining buffer
+                    for update in buffer.drain(..) {
+                        last_u = update.final_update_id;
+                        let event = self.convert_depth_update(&update);
+                        if let Err(e) = on_event(MarketMessageType::DepthUpdate as u16, &event) {
+                            error!("Failed to write buffered depth: {}", e);
+                        }
+                    }
+
+                    // 3. Transition to Synced
+                    states.insert(symbol.clone(), SymbolState::Synced { last_u });
+                    info!("Synced {}", symbol);
                 }
-                last_u = update.final_update_id;
-                
-                let event = self.convert_depth_update(&update);
-                if let Err(e) = on_event(MarketMessageType::DepthUpdate as u16, &event) {
-                    error!("Failed to write buffered depth: {}", e);
+                other => {
+                    states.insert(symbol, other);
                 }
             }
-
-            // 4. Transition to Synced
-            states.insert(symbol.clone(), SymbolState::Synced { last_u });
-            info!("Synced {}", symbol);
         }
     }
 
@@ -284,30 +298,66 @@ impl BinanceFeed {
         update: &BinanceDepthUpdate,
         states: &mut HashMap<String, SymbolState>,
         on_event: &mut F,
+        snapshot_tx: &mpsc::Sender<(String, Result<BinanceSnapshot>)>,
     ) where
         F: FnMut(u16, &dyn Appendable) -> Result<()>,
     {
         let symbol = update.symbol.to_uppercase();
-        match states.get_mut(&symbol) {
-            Some(SymbolState::Buffering(buffer)) => {
-                buffer.push_back(update.clone());
-            }
-            Some(SymbolState::Synced { last_u }) => {
-                if update.first_update_id != *last_u + 1 {
-                    // Gap detected?
-                    // Note: Binance says "The first processed event should have U <= lastUpdateId+1 AND u >= lastUpdateId+1"
-                    // But for subsequent events: "Each new event's U should be equal to the previous event's u+1."
-                    warn!("Potential gap for {}: prev_u {} vs next_U {}", symbol, last_u, update.first_update_id);
+        if let Some(state) = states.remove(&symbol) {
+            match state {
+                SymbolState::Buffering(mut buffer) => {
+                    buffer.push_back(update.clone());
+                    states.insert(symbol, SymbolState::Buffering(buffer));
                 }
-                *last_u = update.final_update_id;
-                
-                let event = self.convert_depth_update(update);
-                if let Err(e) = on_event(MarketMessageType::DepthUpdate as u16, &event) {
-                     error!("Failed to write depth: {}", e);
+                SymbolState::Synced { last_u } => {
+                    if update.first_update_id != last_u + 1 {
+                        warn!(
+                            "Gap detected for {}: prev_u {} vs next_U {}. Resyncing.",
+                            symbol, last_u, update.first_update_id
+                        );
+                        let mut buffer = VecDeque::new();
+                        buffer.push_back(update.clone());
+                        states.insert(symbol.clone(), SymbolState::Buffering(buffer));
+                        self.request_snapshot(&symbol, snapshot_tx, SNAPSHOT_RETRY_DELAY);
+                        return;
+                    }
+
+                    let event = self.convert_depth_update(update);
+                    if let Err(e) = on_event(MarketMessageType::DepthUpdate as u16, &event) {
+                        error!("Failed to write depth: {}", e);
+                    }
+                    states.insert(symbol, SymbolState::Synced { last_u: update.final_update_id });
+                }
+                other => {
+                    states.insert(symbol, other);
                 }
             }
-            _ => {} // Connecting or unknown
         }
+    }
+
+    fn request_snapshot(
+        &self,
+        symbol: &str,
+        snapshot_tx: &mpsc::Sender<(String, Result<BinanceSnapshot>)>,
+        delay: Duration,
+    ) {
+        let symbol = symbol.to_uppercase();
+        let client = self.client.clone();
+        let tx = snapshot_tx.clone();
+        tokio::spawn(async move {
+            if !delay.is_zero() {
+                sleep(delay).await;
+            }
+            let url = format!("{}/api/v3/depth?symbol={}&limit=1000", BINANCE_API_URL, symbol);
+            let result: Result<BinanceSnapshot> = async {
+                let resp = client.get(&url).send().await?;
+                let resp = resp.error_for_status()?;
+                let snapshot = resp.json::<BinanceSnapshot>().await?;
+                Ok(snapshot)
+            }
+            .await;
+            let _ = tx.send((symbol, result)).await;
+        });
     }
 
     async fn connect_and_subscribe(&self) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
