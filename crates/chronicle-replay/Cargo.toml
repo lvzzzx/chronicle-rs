@@ -12,3 +12,6 @@ path = "src/lib.rs"
 anyhow = "1"
 chronicle-core = { path = "../chronicle-core" }
 chronicle-protocol = { path = "../chronicle-protocol" }
+
+[dev-dependencies]
+tempfile = "3"

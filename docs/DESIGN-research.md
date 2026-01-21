@@ -370,11 +370,22 @@ Tardis `incremental_book_L2` rows are price-level updates with absolute sizes. M
 
 Replaying 5 years of ticks to test a strategy on the last 10 minutes is non-viable.
 
-### 5.1 Periodic Snapshots
-The system supports "Checkpoints":
--   **Frequency:** e.g., Every midnight UTC or every 10GB of data.
--   **Format:** A serialized dump of the `L3Book` struct (using SBE or raw binary).
--   **Naming:** `snapshot_<seq_num>.bin`.
+### 5.1 Snapshot Policy (Producer + Trigger)
+Snapshots are **derived artifacts** for fast warm starts. They do **not** share the queue `MessageHeader`.
+
+**Producer (recommended):**
+- A separate "snapshotter" process subscribes to the queue, maintains an in-memory book, and emits snapshots periodically.
+- This avoids blocking the writer and keeps snapshot CPU cost off the hot path.
+
+**Location (suggested):**
+- `${bus}/snapshots/<venue>/<market>/snapshot_<seq>.bin`
+
+**Triggers (examples):**
+- Every N minutes (wall-clock).
+- Every N records / bytes ingested.
+- On segment roll (bounded snapshot intervals).
+
+**Naming:** `snapshot_<seq_num>.bin` (or `.cps`) where `seq_num` is the last applied event in the snapshot.
 
 **Snapshot metadata (required):**
 - `seq_num` at which the snapshot is valid (next replay starts at `seq_num + 1`).
@@ -382,7 +393,7 @@ The system supports "Checkpoints":
 - `exchange_ts_range` and `ingest_ts_range`.
 - Optional `book_hash` for deterministic verification.
 
-### 5.2 Checkpoint Binary Layout (Wire-Compat)
+### 5.2 Snapshot Binary Layout (Wire-Compat)
 
 Snapshots are simple, versioned blobs with a fixed header followed by the serialized book.
 All integers are little-endian.
@@ -397,7 +408,7 @@ SnapshotHeader (128 bytes):
 
 ```
 Offset  Size  Field
-0x0000  8     magic = "CHRCKPT1"
+0x0000  8     magic = "CHRSNAP1"
 0x0008  2     schema_version
 0x000A  2     header_len = 128
 0x000C  2     endianness (0=LE, 1=BE)
@@ -421,7 +432,7 @@ Offset  Size  Field
 - For L2 snapshots, the payload should be a compact list of price levels (bids then asks).
 - For L3 snapshots, include full order table plus aggregated levels if you need fast top-of-book access.
 
-### 4.2 Resume Protocol
+### 5.3 Warm Start (Resume) Protocol
 1.  Researcher requests: "Replay from 2023-10-27 09:30:00".
 2.  Engine finds latest snapshot *before* that time: `snapshot_10500000.bin`.
 3.  Load Snapshot into `L3Book` -> State is now at `Seq 10,500,000`.
@@ -429,6 +440,14 @@ Offset  Size  Field
 5.  Seek/Scan to `Seq 10,500,001`.
 6.  Replay fast-forward until `09:30:00`.
 7.  Begin Strategy simulation.
+
+### 5.4 Retention + Validation
+- Keep only the newest K snapshots per market, or expire by age/bytes.
+- On load, validate:
+  - `magic`, `schema_version`, `endianness`
+  - `payload_len` matches file size
+  - optional `book_hash` if deterministic replay is required
+- Publish snapshots atomically: write to `snapshot_<seq>.tmp`, fsync, then rename.
 
 ## 6. Validation Standards
 
