@@ -244,6 +244,15 @@ name = "chronicle-protocol"
 version = "0.1.0"
 
 [[package]]
+name = "chronicle-replay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chronicle-core",
+ "chronicle-protocol",
+]
+
+[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -45,3 +45,7 @@ harness = false
 [[bench]]
 name = "baseline_uds"
 harness = false
+
+[[bench]]
+name = "seek"
+harness = false

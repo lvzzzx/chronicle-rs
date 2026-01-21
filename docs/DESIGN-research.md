@@ -467,10 +467,42 @@ Make this a configurable policy instead of hard-coded panic.
 
 ### 7.3 Indexing for Seek
 
-To avoid O(n) scans on multi-year logs, add a sparse index per segment:
-- Map `timestamp_ns -> seq` every N records.
-- Store in a sidecar file (e.g., `segment_000123.idx`).
-- Replay seeks become `O(log n)` to find the nearest block, then fast-forward.
+To avoid O(n) scans on multi-year logs, add a sparse index per segment.
+Default policy: one entry every 4096 records, keyed by `seq` with `timestamp_ns` as a hint.
+
+**Sidecar format:** `000123.idx` next to `000123.q` (little-endian).
+
+IndexHeader (80 bytes):
+
+```
+Offset  Size  Field
+0x0000  8     magic = "CHRIDX1\0"
+0x0008  2     version = 1
+0x000A  2     header_len = 80
+0x000C  4     flags (bit0 = partial)
+0x0010  8     segment_id
+0x0018  8     segment_size
+0x0020  4     data_offset
+0x0024  4     entry_stride (records)
+0x0028  8     min_seq
+0x0030  8     max_seq
+0x0038  8     min_ts_ns
+0x0040  8     max_ts_ns
+0x0048  8     entry_count
+```
+
+IndexEntry (24 bytes each):
+
+```
+Offset  Size  Field
+0x0000  8     seq
+0x0008  8     timestamp_ns
+0x0010  8     offset (byte offset in segment)
+```
+
+**Seek behavior:**
+- **Seek by seq:** choose segment via `min_seq/max_seq`, binary search entries, jump to offset, then scan forward.
+- **Seek by time:** choose segment via `min_ts/max_ts`, binary search by timestamp (best-effort), then scan forward.
 
 ## 8. Python Integration (The "Analyst" Interface)
 

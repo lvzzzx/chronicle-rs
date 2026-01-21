@@ -12,6 +12,7 @@ pub mod mmap;
 pub mod reader;
 pub mod retention;
 pub mod segment;
+mod seek_index;
 pub mod wait;
 pub mod writer;
 mod writer_lock;

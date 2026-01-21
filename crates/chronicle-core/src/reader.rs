@@ -7,6 +7,7 @@ use crate::header::{
     MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, PAD_TYPE_ID, RECORD_ALIGN,
 };
 use crate::mmap::MmapFile;
+use crate::seek_index::{load_index_entries, load_index_header, SeekIndexEntry, SeekIndexHeader};
 use crate::segment::{
     load_reader_meta, open_segment, read_segment_header, segment_path, store_reader_meta,
     validate_segment_size, ReaderMeta, SEG_DATA_OFFSET, SEG_FLAG_SEALED,
@@ -254,6 +255,46 @@ impl Queue {
 }
 
 impl QueueReader {
+    pub fn seek_seq(&mut self, target_seq: u64) -> Result<bool> {
+        let segments = list_segments(&self.path)?;
+        if segments.is_empty() {
+            return Ok(false);
+        }
+        let headers = load_seek_headers(&self.path, &segments)?;
+        let header = select_header_for_seq(&headers, target_seq);
+        let segment_id = header.map(|h| h.segment_id).unwrap_or(segments[0]);
+        let mut offset = SEG_DATA_OFFSET as u64;
+        if let Some(header) = header {
+            offset = header.data_offset as u64;
+            let entries = load_index_entries(&self.path, header)?;
+            if let Some(entry) = find_entry_by_seq(&entries, target_seq) {
+                offset = entry.offset.max(SEG_DATA_OFFSET as u64);
+            }
+        }
+        self.open_segment_for_seek(segment_id, offset)?;
+        self.scan_to_seq(target_seq)
+    }
+
+    pub fn seek_timestamp(&mut self, target_ts_ns: u64) -> Result<bool> {
+        let segments = list_segments(&self.path)?;
+        if segments.is_empty() {
+            return Ok(false);
+        }
+        let headers = load_seek_headers(&self.path, &segments)?;
+        let header = select_header_for_timestamp(&headers, target_ts_ns);
+        let segment_id = header.map(|h| h.segment_id).unwrap_or(segments[0]);
+        let mut offset = SEG_DATA_OFFSET as u64;
+        if let Some(header) = header {
+            offset = header.data_offset as u64;
+            let entries = load_index_entries(&self.path, header)?;
+            if let Some(entry) = find_entry_by_timestamp(&entries, target_ts_ns) {
+                offset = entry.offset.max(SEG_DATA_OFFSET as u64);
+            }
+        }
+        self.open_segment_for_seek(segment_id, offset)?;
+        self.scan_to_timestamp(target_ts_ns)
+    }
+
     pub fn next(&mut self) -> Result<Option<MessageView<'_>>> {
         let Some(message) = self.next_ref()? else {
             return Ok(None);
@@ -509,6 +550,65 @@ impl QueueReader {
         }
         Ok(None)
     }
+
+    fn open_segment_for_seek(&mut self, segment_id: u64, offset: u64) -> Result<()> {
+        let mut resolved_segment = segment_id;
+        let mmap = match open_segment(&self.path, segment_id, self.segment_size) {
+            Ok(mmap) => mmap,
+            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                let segments = list_segments(&self.path)?;
+                if segments.is_empty() {
+                    return Err(Error::Corrupt("no segments found"));
+                }
+                resolved_segment = segments[0];
+                open_segment(&self.path, resolved_segment, self.segment_size)?
+            }
+            Err(err) => return Err(err),
+        };
+        if self.memlock {
+            mmap.lock()?;
+        }
+        self.mmap = mmap;
+        self.segment_id = resolved_segment as u32;
+        if resolved_segment == segment_id {
+            self.read_offset = offset.max(SEG_DATA_OFFSET as u64);
+        } else {
+            self.read_offset = SEG_DATA_OFFSET as u64;
+        }
+        self.meta.segment_id = self.segment_id as u64;
+        self.meta.offset = self.read_offset;
+        Ok(())
+    }
+
+    fn scan_to_seq(&mut self, target_seq: u64) -> Result<bool> {
+        loop {
+            let Some(message) = self.next_ref()? else {
+                return Ok(false);
+            };
+            if message.seq >= target_seq {
+                let record_start = message.payload_offset.saturating_sub(HEADER_SIZE) as u64;
+                self.read_offset = record_start;
+                self.meta.segment_id = self.segment_id as u64;
+                self.meta.offset = self.read_offset;
+                return Ok(true);
+            }
+        }
+    }
+
+    fn scan_to_timestamp(&mut self, target_ts_ns: u64) -> Result<bool> {
+        loop {
+            let Some(message) = self.next_ref()? else {
+                return Ok(false);
+            };
+            if message.timestamp_ns >= target_ts_ns {
+                let record_start = message.payload_offset.saturating_sub(HEADER_SIZE) as u64;
+                self.read_offset = record_start;
+                self.meta.segment_id = self.segment_id as u64;
+                self.meta.offset = self.read_offset;
+                return Ok(true);
+            }
+        }
+    }
 }
 
 fn align_up(value: usize, align: usize) -> usize {
@@ -524,6 +624,125 @@ fn now_ns() -> Result<u64> {
         .map_err(|_| Error::Unsupported("system time before UNIX epoch"))?;
     u64::try_from(timestamp.as_nanos())
         .map_err(|_| Error::Unsupported("system time exceeds timestamp range"))
+}
+
+fn list_segments(path: &std::path::Path) -> Result<Vec<u64>> {
+    let mut segments = Vec::new();
+    for entry in std::fs::read_dir(path).map_err(Error::Io)? {
+        let entry = entry.map_err(Error::Io)?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.ends_with(".q") && name_str.len() == 11 {
+            if let Ok(id) = name_str[0..9].parse::<u64>() {
+                segments.push(id);
+            }
+        }
+    }
+    segments.sort_unstable();
+    Ok(segments)
+}
+
+fn load_seek_headers(path: &std::path::Path, segments: &[u64]) -> Result<Vec<SeekIndexHeader>> {
+    let mut headers = Vec::new();
+    for &segment_id in segments {
+        if let Some(header) = load_index_header(path, segment_id)? {
+            headers.push(header);
+        }
+    }
+    Ok(headers)
+}
+
+fn select_header_for_seq<'a>(
+    headers: &'a [SeekIndexHeader],
+    target_seq: u64,
+) -> Option<&'a SeekIndexHeader> {
+    if headers.is_empty() {
+        return None;
+    }
+    let first = &headers[0];
+    if target_seq <= first.min_seq {
+        return Some(first);
+    }
+    let last = headers.last()?;
+    if target_seq > last.max_seq {
+        return Some(last);
+    }
+    for header in headers {
+        if target_seq >= header.min_seq && target_seq <= header.max_seq {
+            return Some(header);
+        }
+    }
+    for header in headers {
+        if target_seq <= header.max_seq {
+            return Some(header);
+        }
+    }
+    Some(last)
+}
+
+fn select_header_for_timestamp<'a>(
+    headers: &'a [SeekIndexHeader],
+    target_ts_ns: u64,
+) -> Option<&'a SeekIndexHeader> {
+    if headers.is_empty() {
+        return None;
+    }
+    let first = &headers[0];
+    if target_ts_ns <= first.min_ts_ns {
+        return Some(first);
+    }
+    let last = headers.last()?;
+    if target_ts_ns > last.max_ts_ns {
+        return Some(last);
+    }
+    for header in headers {
+        if target_ts_ns >= header.min_ts_ns && target_ts_ns <= header.max_ts_ns {
+            return Some(header);
+        }
+    }
+    for header in headers {
+        if target_ts_ns <= header.max_ts_ns {
+            return Some(header);
+        }
+    }
+    Some(last)
+}
+
+fn find_entry_by_seq<'a>(
+    entries: &'a [SeekIndexEntry],
+    target_seq: u64,
+) -> Option<&'a SeekIndexEntry> {
+    if entries.is_empty() {
+        return None;
+    }
+    let mut lo = 0usize;
+    let mut hi = entries.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if entries[mid].seq <= target_seq {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if lo == 0 {
+        None
+    } else {
+        entries.get(lo - 1)
+    }
+}
+
+fn find_entry_by_timestamp<'a>(
+    entries: &'a [SeekIndexEntry],
+    target_ts_ns: u64,
+) -> Option<&'a SeekIndexEntry> {
+    let mut best = None;
+    for entry in entries {
+        if entry.timestamp_ns <= target_ts_ns {
+            best = Some(entry);
+        }
+    }
+    best
 }
 
 fn ttl_ns(ttl: Duration) -> u64 {

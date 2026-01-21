@@ -15,6 +15,7 @@ use crate::segment::{
     store_index, validate_segment_size, DEFAULT_SEGMENT_SIZE, SegmentIndex, SEG_DATA_OFFSET,
     SEG_FLAG_SEALED,
 };
+use crate::seek_index::{SeekIndexBuilder, DEFAULT_INDEX_STRIDE_RECORDS};
 use crate::wait::futex_wake;
 use crate::writer_lock;
 use crate::{Error, Result};
@@ -311,6 +312,7 @@ pub struct QueueWriter<C: Clock = SystemClock> {
     segment_id: u32,
     write_offset: u64,
     seq: u64,
+    seek_index: SeekIndexBuilder,
     config: WriterConfig,
     segment_size: usize,
     retention_worker: RetentionWorker,
@@ -453,6 +455,15 @@ impl Queue {
             control.lock()?;
             mmap.lock()?;
         }
+        let mut seek_index = SeekIndexBuilder::new(
+            segment_id as u64,
+            segment_size as u64,
+            SEG_DATA_OFFSET as u32,
+            DEFAULT_INDEX_STRIDE_RECORDS,
+        );
+        if write_offset > SEG_DATA_OFFSET as u64 {
+            seek_index.mark_partial();
+        }
         let writer = QueueWriter {
             path,
             control,
@@ -460,6 +471,7 @@ impl Queue {
             segment_id,
             write_offset,
             seq: 0,
+            seek_index,
             config,
             segment_size,
             retention_worker,
@@ -620,6 +632,8 @@ impl<C: Clock> QueueWriter<C> {
         let commit_len = MessageHeader::commit_len_for_payload(payload_len)?;
         let header_ptr = unsafe { self.mmap.as_mut_slice().as_mut_ptr().add(offset) };
         MessageHeader::store_commit_len(header_ptr, commit_len);
+        self.seek_index
+            .observe(header.seq, header.timestamp_ns, offset as u64);
 
         self.seq = self.seq.wrapping_add(1);
         self.write_offset = self
@@ -775,6 +789,7 @@ impl<C: Clock> QueueWriter<C> {
 
     fn roll_segment(&mut self) -> Result<()> {
         let next_segment = self.segment_id + 1;
+        self.seek_index.flush(&self.path)?;
         let new_mmap = if let Some(prepared) = self.acquire_preallocated(next_segment as u64)? {
             let header = read_segment_header(&prepared)?;
             if header.segment_id != next_segment {
@@ -806,6 +821,8 @@ impl<C: Clock> QueueWriter<C> {
 
         self.segment_id = next_segment;
         self.write_offset = SEG_DATA_OFFSET as u64;
+        self.seek_index
+            .reset(self.segment_id as u64, self.segment_size as u64);
         self.control.set_writer_heartbeat_ns(now_ns()?);
 
         self.control
