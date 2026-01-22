@@ -57,6 +57,10 @@ impl ReplayEngine {
         &self.l2_book
     }
 
+    pub fn reader_mut(&mut self) -> &mut QueueReader {
+        &mut self.reader
+    }
+
     pub fn last_gap(&self) -> Option<(u64, u64)> {
         self.last_gap
     }

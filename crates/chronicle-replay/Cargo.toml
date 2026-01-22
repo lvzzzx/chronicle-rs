@@ -14,4 +14,9 @@ chronicle-core = { path = "../chronicle-core" }
 chronicle-protocol = { path = "../chronicle-protocol" }
 
 [dev-dependencies]
+criterion = "0.5"
 tempfile = "3"
+
+[[bench]]
+name = "warm_start"
+harness = false

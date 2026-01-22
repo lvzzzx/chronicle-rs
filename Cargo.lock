@@ -250,6 +250,7 @@ dependencies = [
  "anyhow",
  "chronicle-core",
  "chronicle-protocol",
+ "criterion",
  "tempfile",
 ]
 
