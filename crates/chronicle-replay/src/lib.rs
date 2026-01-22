@@ -80,6 +80,27 @@ impl ReplayEngine {
         Ok(Some(applied.update))
     }
 
+    pub fn next_message(&mut self) -> Result<Option<ReplayMessage<'_>>> {
+        let Some(msg) = self.reader.next()? else {
+            return Ok(None);
+        };
+
+        let applied = apply_message(
+            &self.policy,
+            &mut self.last_seq,
+            &mut self.last_gap,
+            &mut self.l2_book,
+            &msg,
+        )?;
+
+        Ok(Some(ReplayMessage {
+            msg,
+            update: applied.update,
+            book_event: applied.book_event,
+            book: &self.l2_book,
+        }))
+    }
+
     pub fn wait(&mut self, timeout: Option<std::time::Duration>) -> Result<()> {
         self.reader.wait(timeout).map_err(|e| e.into())
     }
@@ -145,9 +166,9 @@ impl ReplayEngine {
     }
 }
 
-struct AppliedMessage {
+struct AppliedMessage<'a> {
     update: ReplayUpdate,
-    book_header: Option<BookEventHeader>,
+    book_event: Option<BookEvent<'a>>,
 }
 
 impl ReplayEngine {
@@ -166,12 +187,16 @@ impl ReplayEngine {
             bail!("snapshot payload too small for L2Snapshot");
         };
         let levels_offset = std::mem::size_of::<L2Snapshot>();
-        let total = snapshot.bid_count as usize + snapshot.ask_count as usize;
-        let Some(levels) = read_levels(payload, levels_offset, total) else {
+        let Some(levels) = LevelsView::new(
+            payload,
+            levels_offset,
+            snapshot.bid_count as usize,
+            snapshot.ask_count as usize,
+        ) else {
             bail!("snapshot payload missing price levels");
         };
-        let (bids, asks) = levels.split_at(snapshot.bid_count as usize);
-        self.l2_book.apply_snapshot(&snapshot, bids, asks);
+        self.l2_book
+            .apply_snapshot(&snapshot, levels.bids_iter(), levels.asks_iter());
         Ok(())
     }
 
@@ -187,8 +212,8 @@ impl ReplayEngine {
                 &mut self.l2_book,
                 &msg,
             )?;
-            if let Some(header) = applied.book_header {
-                if header.exchange_ts_ns >= target_ts_ns {
+            if let Some(event) = applied.book_event {
+                if event.header.exchange_ts_ns >= target_ts_ns {
                     return Ok(true);
                 }
             }
@@ -207,8 +232,8 @@ impl ReplayEngine {
                 &mut self.l2_book,
                 &msg,
             )?;
-            if let Some(header) = applied.book_header {
-                if header.ingest_ts_ns >= target_ts_ns {
+            if let Some(event) = applied.book_event {
+                if event.header.ingest_ts_ns >= target_ts_ns {
                     return Ok(true);
                 }
             }
@@ -216,13 +241,13 @@ impl ReplayEngine {
     }
 }
 
-fn apply_message(
+fn apply_message<'a>(
     policy: &ReplayPolicy,
     last_seq: &mut Option<u64>,
     last_gap: &mut Option<(u64, u64)>,
     l2_book: &mut L2Book,
-    msg: &MessageView<'_>,
-) -> Result<AppliedMessage> {
+    msg: &MessageView<'a>,
+) -> Result<AppliedMessage<'a>> {
     if let Some(prev) = *last_seq {
         if msg.seq != prev.wrapping_add(1) {
             *last_gap = Some((prev, msg.seq));
@@ -237,7 +262,7 @@ fn apply_message(
                             seq: msg.seq,
                             reason: SkipReason::Gap,
                         },
-                        book_header: None,
+                        book_event: None,
                     });
                 }
                 GapPolicy::Ignore => {
@@ -254,7 +279,7 @@ fn apply_message(
                 seq: msg.seq,
                 reason: SkipReason::NonBookEvent,
             },
-            book_header: None,
+            book_event: None,
         });
     }
 
@@ -264,7 +289,7 @@ fn apply_message(
                 seq: msg.seq,
                 reason: SkipReason::Corrupt,
             },
-            book_header: None,
+            book_event: None,
         });
     };
 
@@ -274,79 +299,204 @@ fn apply_message(
                 seq: msg.seq,
                 reason: SkipReason::UnsupportedMode,
             },
-            book_header: Some(header),
+            book_event: Some(BookEvent {
+                header,
+                payload: BookEventPayload::Unsupported,
+            }),
         });
     }
 
-    let update = match header.event_type {
+    let payload_offset = std::mem::size_of::<BookEventHeader>();
+
+    let (update, book_event) = match header.event_type {
         x if x == BookEventType::Snapshot as u8 => {
-            let offset = std::mem::size_of::<BookEventHeader>();
-            let Some(snapshot) = read_copy::<L2Snapshot>(msg.payload, offset) else {
+            let Some(snapshot) = read_copy::<L2Snapshot>(msg.payload, payload_offset) else {
                 return Ok(AppliedMessage {
                     update: ReplayUpdate::Skipped {
                         seq: msg.seq,
                         reason: SkipReason::Corrupt,
                     },
-                    book_header: Some(header),
+                    book_event: Some(BookEvent {
+                        header,
+                        payload: BookEventPayload::Unsupported,
+                    }),
                 });
             };
-            let levels_offset = offset + std::mem::size_of::<L2Snapshot>();
-            let total = snapshot.bid_count as usize + snapshot.ask_count as usize;
-            let Some(levels) = read_levels(msg.payload, levels_offset, total) else {
+            let levels_offset = payload_offset + std::mem::size_of::<L2Snapshot>();
+            let Some(levels) = LevelsView::new(
+                msg.payload,
+                levels_offset,
+                snapshot.bid_count as usize,
+                snapshot.ask_count as usize,
+            ) else {
                 return Ok(AppliedMessage {
                     update: ReplayUpdate::Skipped {
                         seq: msg.seq,
                         reason: SkipReason::Corrupt,
                     },
-                    book_header: Some(header),
+                    book_event: Some(BookEvent {
+                        header,
+                        payload: BookEventPayload::Unsupported,
+                    }),
                 });
             };
-            let (bids, asks) = levels.split_at(snapshot.bid_count as usize);
-            l2_book.apply_snapshot(&snapshot, bids, asks);
-            ReplayUpdate::Applied {
+            l2_book.apply_snapshot(&snapshot, levels.bids_iter(), levels.asks_iter());
+            let book_event = Some(BookEvent {
+                header,
+                payload: BookEventPayload::Snapshot { snapshot, levels },
+            });
+            let update = ReplayUpdate::Applied {
                 seq: msg.seq,
                 event_type: BookEventType::Snapshot,
-            }
+            };
+            (update, book_event)
         }
         x if x == BookEventType::Diff as u8 => {
-            let offset = std::mem::size_of::<BookEventHeader>();
-            let Some(diff) = read_copy::<L2Diff>(msg.payload, offset) else {
+            let Some(diff) = read_copy::<L2Diff>(msg.payload, payload_offset) else {
                 return Ok(AppliedMessage {
                     update: ReplayUpdate::Skipped {
                         seq: msg.seq,
                         reason: SkipReason::Corrupt,
                     },
-                    book_header: Some(header),
+                    book_event: Some(BookEvent {
+                        header,
+                        payload: BookEventPayload::Unsupported,
+                    }),
                 });
             };
-            let levels_offset = offset + std::mem::size_of::<L2Diff>();
-            let total = diff.bid_count as usize + diff.ask_count as usize;
-            let Some(levels) = read_levels(msg.payload, levels_offset, total) else {
+            let levels_offset = payload_offset + std::mem::size_of::<L2Diff>();
+            let Some(levels) = LevelsView::new(
+                msg.payload,
+                levels_offset,
+                diff.bid_count as usize,
+                diff.ask_count as usize,
+            ) else {
                 return Ok(AppliedMessage {
                     update: ReplayUpdate::Skipped {
                         seq: msg.seq,
                         reason: SkipReason::Corrupt,
                     },
-                    book_header: Some(header),
+                    book_event: Some(BookEvent {
+                        header,
+                        payload: BookEventPayload::Unsupported,
+                    }),
                 });
             };
-            let (bids, asks) = levels.split_at(diff.bid_count as usize);
-            l2_book.apply_diff(&diff, bids, asks);
-            ReplayUpdate::Applied {
+            l2_book.apply_diff(&diff, levels.bids_iter(), levels.asks_iter());
+            let book_event = Some(BookEvent {
+                header,
+                payload: BookEventPayload::Diff { diff, levels },
+            });
+            let update = ReplayUpdate::Applied {
                 seq: msg.seq,
                 event_type: BookEventType::Diff,
-            }
+            };
+            (update, book_event)
         }
-        _ => ReplayUpdate::Skipped {
-            seq: msg.seq,
-            reason: SkipReason::UnsupportedEvent,
-        },
+        _ => {
+            let book_event = Some(BookEvent {
+                header,
+                payload: BookEventPayload::Unsupported,
+            });
+            let update = ReplayUpdate::Skipped {
+                seq: msg.seq,
+                reason: SkipReason::UnsupportedEvent,
+            };
+            (update, book_event)
+        }
     };
 
     Ok(AppliedMessage {
         update,
-        book_header: Some(header),
+        book_event,
     })
+}
+
+pub struct ReplayMessage<'a> {
+    pub msg: MessageView<'a>,
+    pub update: ReplayUpdate,
+    pub book_event: Option<BookEvent<'a>>,
+    pub book: &'a L2Book,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BookEvent<'a> {
+    pub header: BookEventHeader,
+    pub payload: BookEventPayload<'a>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BookEventPayload<'a> {
+    Snapshot { snapshot: L2Snapshot, levels: LevelsView<'a> },
+    Diff { diff: L2Diff, levels: LevelsView<'a> },
+    Reset,
+    Heartbeat,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LevelsView<'a> {
+    buf: &'a [u8],
+    offset: usize,
+    bid_count: usize,
+    ask_count: usize,
+}
+
+impl<'a> LevelsView<'a> {
+    pub fn new(buf: &'a [u8], offset: usize, bid_count: usize, ask_count: usize) -> Option<Self> {
+        let size = std::mem::size_of::<PriceLevelUpdate>();
+        let total = bid_count.checked_add(ask_count)?;
+        let total_bytes = total.checked_mul(size)?;
+        if buf.len() < offset + total_bytes {
+            return None;
+        }
+        Some(Self {
+            buf,
+            offset,
+            bid_count,
+            ask_count,
+        })
+    }
+
+    pub fn bids_iter(&self) -> PriceLevelIter<'a> {
+        PriceLevelIter::new(self.buf, self.offset, self.bid_count)
+    }
+
+    pub fn asks_iter(&self) -> PriceLevelIter<'a> {
+        let size = std::mem::size_of::<PriceLevelUpdate>();
+        let ask_offset = self.offset + self.bid_count * size;
+        PriceLevelIter::new(self.buf, ask_offset, self.ask_count)
+    }
+}
+
+pub struct PriceLevelIter<'a> {
+    buf: &'a [u8],
+    offset: usize,
+    remaining: usize,
+}
+
+impl<'a> PriceLevelIter<'a> {
+    fn new(buf: &'a [u8], offset: usize, count: usize) -> Self {
+        Self {
+            buf,
+            offset,
+            remaining: count,
+        }
+    }
+}
+
+impl<'a> Iterator for PriceLevelIter<'a> {
+    type Item = PriceLevelUpdate;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let item = read_copy::<PriceLevelUpdate>(self.buf, self.offset)?;
+        self.offset += std::mem::size_of::<PriceLevelUpdate>();
+        self.remaining -= 1;
+        Some(item)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -409,7 +559,11 @@ impl L2Book {
         (self.price_scale, self.size_scale)
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: &L2Snapshot, bids: &[PriceLevelUpdate], asks: &[PriceLevelUpdate]) {
+    pub fn apply_snapshot<I, J>(&mut self, snapshot: &L2Snapshot, bids: I, asks: J)
+    where
+        I: IntoIterator<Item = PriceLevelUpdate>,
+        J: IntoIterator<Item = PriceLevelUpdate>,
+    {
         self.price_scale = snapshot.price_scale;
         self.size_scale = snapshot.size_scale;
         self.bids.clear();
@@ -426,7 +580,11 @@ impl L2Book {
         }
     }
 
-    pub fn apply_diff(&mut self, diff: &L2Diff, bids: &[PriceLevelUpdate], asks: &[PriceLevelUpdate]) {
+    pub fn apply_diff<I, J>(&mut self, diff: &L2Diff, bids: I, asks: J)
+    where
+        I: IntoIterator<Item = PriceLevelUpdate>,
+        J: IntoIterator<Item = PriceLevelUpdate>,
+    {
         self.price_scale = diff.price_scale;
         self.size_scale = diff.size_scale;
         for level in bids {
@@ -453,18 +611,4 @@ fn read_copy<T: Copy>(buf: &[u8], offset: usize) -> Option<T> {
     }
     let ptr = unsafe { buf.as_ptr().add(offset) as *const T };
     Some(unsafe { std::ptr::read_unaligned(ptr) })
-}
-
-fn read_levels(buf: &[u8], offset: usize, count: usize) -> Option<Vec<PriceLevelUpdate>> {
-    let size = std::mem::size_of::<PriceLevelUpdate>();
-    let total = count.checked_mul(size)?;
-    if buf.len() < offset + total {
-        return None;
-    }
-    let mut levels = Vec::with_capacity(count);
-    for i in 0..count {
-        let item_offset = offset + i * size;
-        levels.push(read_copy::<PriceLevelUpdate>(buf, item_offset)?);
-    }
-    Some(levels)
 }

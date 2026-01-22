@@ -8,6 +8,7 @@ This document defines the architecture for the **Chronicle Feature Extractor**, 
 - **Batch over Event:** Unlike backtesting (event-driven), extraction is throughput-driven.
 - **Zero-Copy to Column:** Compute features in registers and write directly to Arrow buffers.
 - **GIL-Free:** Python configures the job; Rust executes the loop.
+- **Event-Time Only:** All temporal logic is derived from message timestamps (`ingest_ts` / `exchange_ts`), never the system clock.
 
 ## 2. Pipeline Architecture
 
@@ -15,6 +16,10 @@ The pipeline consists of three stages executed in a tight loop:
 1.  **Ingest:** Zero-copy read from Chronicle Queue (`.q` files).
 2.  **Reconstruct:** deterministic L3/L2 book updates.
 3.  **Compute & Emit:** Calculate features and append to columnar buffers.
+
+**Integrity guardrails (must pass):**
+- **Sequence continuity:** enforce strict ordering (no gaps) using `MessageHeader.seq` and/or `BookEventHeader.native_seq`.
+- **Schema compatibility:** validate `schema_version` and `book_mode` before applying an event.
 
 ```mermaid
 graph LR
@@ -37,10 +42,10 @@ pub trait FeatureSet {
     /// Define the output schema (Column Names and Types)
     fn schema(&self) -> Schema;
 
-    /// Called on every market event.
+    /// Called on every market event to keep feature state consistent.
     /// - `book`: The current state of the Order Book (post-update).
     /// - `event`: The event that triggered the update (Add/Cancel/Trade).
-    /// - `out`: The row buffer to write features into.
+    /// - `out`: The row buffer to write features into (only committed when `should_emit` is true).
     fn calculate(&mut self, book: &L3OrderBook, event: &BookEvent, out: &mut RowBuffer);
     
     /// Optional: Filter events to emit. (e.g., only emit on Trades or Time Bars)
@@ -119,8 +124,8 @@ config = ch.ExtractionConfig(
         ch.features.OFI(decay=0.0),          # Raw OFI
         ch.features.TradeFlow(),             # Aggressor volume
     ],
-    # Filters control the output resolution
-    trigger=ch.triggers.TradeOrTime(sec=1.0) 
+    # Filters control the output resolution (event-time, not wall-clock)
+    trigger=ch.triggers.TradeOrTime(sec=1.0, timebase="exchange_ts")
 )
 ```
 
@@ -145,14 +150,16 @@ To avoid allocating a `Vec<f64>` for every row, `RowBuffer` is a facade over a s
 - `out.append_f64(col_idx, value)` maps directly to `builders[col_idx].append_value(value)`.
 - When builders reach a batch size (e.g., 8192 rows), they are flushed to the Parquet writer.
 
-### 5.2 Parallelism
-Since L3 reconstruction is strictly serial (causal), we cannot parallelize within a single symbol stream.
-- **Parallelism Strategy:** **Multi-Symbol Processing.**
-- Use `rayon` to process multiple symbols (files) concurrently, saturating the NVMe bandwidth.
+### 5.2 Single-Threaded Determinism
+L3/L2 reconstruction is strictly serial (causal), so the ETL loop is single-threaded per stream.
+- No cross-thread coordination in the hot path.
+- Parallelism, if any, is external to this design (separate processes/jobs per symbol).
 
 ### 5.3 Warm Starts (Snapshots)
 The Extractor must support the same `Snapshot` mechanism as the Replay Engine.
 - If the job starts at `10:00`, it loads the `09:XX` snapshot, fast-forwards to `10:00`, and *then* begins emitting rows.
+- **Required metadata:** snapshot `seq_num`, `schema_version`, `endianness`, `book_mode`, and `exchange_ts_range`/`ingest_ts_range`.
+- **Validation:** reject snapshot if `seq_num` is not contiguous with the first event or if schema/endianness/book_mode mismatch.
 
 ## 6. Performance Targets
 - **Throughput:** > 1,000,000 events/sec per core.

@@ -3,6 +3,7 @@ members = [
     "crates/chronicle-core",
     "crates/chronicle-bus",
     "crates/chronicle-cli",
+    "crates/chronicle-etl",
     "crates/chronicle-feed-binance",
     "crates/chronicle-protocol",
     "crates/chronicle-replay",
