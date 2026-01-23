@@ -542,3 +542,22 @@ for event in engine:
     alpha = my_model.predict(features)
     # ...
 ```
+
+## 9. Rust Core API (Backtesting)
+
+The core API for production backtesting enforces a strict setup via the Builder pattern.
+
+### 9.1 Configuration (The Builder)
+We use a Builder pattern to enforce strict setup of the environment.
+
+```rust
+let engine = ReplayEngine::builder()
+    .feed("/data/binance/btcusdt")       // Path to chronicle queue
+    .symbol("BTCUSDT")                   // Symbol to filter/validate
+    .mode(BookMode::L3)                  // Enforce L3 (Order Tracking)
+    .start_at(StartMode::Snapshot(       // Warm Start strategy
+        "2024-01-20T09:30:00Z".parse()?
+    ))
+    .gap_policy(GapPolicy::Panic)        // "Silas Standard": Fail on data loss
+    .build()?;
+```
