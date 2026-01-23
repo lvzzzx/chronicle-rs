@@ -25,11 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         options.symbol
     );
 
-    let feed_path = options
-        .bus_root
-        .join("market_data")
-        .join("queue")
-        .join("demo_feed");
+    let feed_path = layout.live_stream_queue("market_data").join("demo_feed");
 
     let reader_name = format!("reader_{}", strategy_id.0);
     let feed_reader = open_subscriber_retry(&feed_path, &reader_name)?;

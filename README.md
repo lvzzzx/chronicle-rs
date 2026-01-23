@@ -32,6 +32,10 @@ Chronicle-RS is a specialized Inter-Process Communication (IPC) framework design
 
 Unlike general-purpose message brokers (RabbitMQ, Kafka) or network-based IPC (gRPC, TCP), Chronicle-RS optimizes for **zero-copy reads**, **microsecond-level latency**, and **deterministic replay** by treating the filesystem as the shared memory bus.
 
+Chronicle-RS supports a **two-tier layout** to keep live IPC fast while preserving long-term history:
+* **Live queues**: hot IPC paths with short retention.
+* **Archive queues**: durable storage for replay/ETL/backtests, fed by a single-threaded tap.
+
 ### Why Chronicle-RS?
 *   **Performance:** Avoiding syscalls on the hot path via `mmap` and atomic synchronization.
 *   **Resilience:** Strategies can crash and restart without losing data or affecting the feed.

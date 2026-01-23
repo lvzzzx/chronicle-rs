@@ -2,6 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use chronicle_bus::BusLayout;
 use chronicle_core::Queue;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,7 +13,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let bus_root = parse_bus_root(&args)?;
-    let queue_path = bus_root.join("market_data").join("queue").join("demo_feed");
+    let layout = BusLayout::new(&bus_root);
+    let queue_path = layout.live_stream_queue("market_data").join("demo_feed");
     println!(
         "feed: bus_root={} queue={}",
         bus_root.display(),

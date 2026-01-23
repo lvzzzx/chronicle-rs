@@ -18,6 +18,14 @@ impl BusLayout {
         Self { root: root.into() }
     }
 
+    pub fn live_stream_queue(&self, stream: &str) -> PathBuf {
+        self.root.join("live").join(stream).join("queue")
+    }
+
+    pub fn archive_stream_queue(&self, stream: &str) -> PathBuf {
+        self.root.join("archive").join(stream).join("queue")
+    }
+
     pub fn strategy_endpoints(&self, id: &StrategyId) -> StrategyEndpoints {
         let base = self.root.join("orders").join("queue").join(&id.0);
         StrategyEndpoints {

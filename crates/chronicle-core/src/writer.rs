@@ -110,6 +110,8 @@ pub struct WriterConfig {
     pub segment_size_bytes: u64,
     pub retention_check_interval: Duration,
     pub retention_check_bytes: u64,
+    pub index_flush_interval: Duration,
+    pub index_flush_records: u64,
     // Offload segment sync to a background thread on roll (lower latency, not durable to power loss).
     pub defer_seal_sync: bool,
     // Spin-wait budget for a preallocated next segment during roll.
@@ -129,6 +131,8 @@ impl Default for WriterConfig {
             segment_size_bytes: DEFAULT_SEGMENT_SIZE as u64,
             retention_check_interval: Duration::from_millis(RETENTION_CHECK_INTERVAL_MS),
             retention_check_bytes: RETENTION_CHECK_BYTES,
+            index_flush_interval: Duration::ZERO,
+            index_flush_records: 0,
             defer_seal_sync: false,
             prealloc_wait: Duration::from_micros(0),
             require_prealloc: false,
@@ -149,6 +153,8 @@ impl WriterConfig {
             segment_size_bytes: DEFAULT_SEGMENT_SIZE as u64,
             retention_check_interval: Duration::from_millis(RETENTION_CHECK_INTERVAL_MS),
             retention_check_bytes: RETENTION_CHECK_BYTES,
+            index_flush_interval: Duration::ZERO,
+            index_flush_records: 0,
             defer_seal_sync: false,
             prealloc_wait: Duration::from_micros(0),
             require_prealloc: false,
@@ -162,6 +168,14 @@ impl WriterConfig {
             prealloc_wait: Duration::from_millis(1),
             require_prealloc: true,
             memlock: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn archive() -> Self {
+        Self {
+            index_flush_interval: Duration::from_secs(1),
+            index_flush_records: 4096,
             ..Self::default()
         }
     }
@@ -313,6 +327,8 @@ pub struct QueueWriter<C: Clock = SystemClock> {
     write_offset: u64,
     seq: u64,
     seek_index: SeekIndexBuilder,
+    index_last_flush: Instant,
+    index_records_since_flush: u64,
     config: WriterConfig,
     segment_size: usize,
     retention_worker: RetentionWorker,
@@ -472,6 +488,8 @@ impl Queue {
             write_offset,
             seq: 0,
             seek_index,
+            index_last_flush: Instant::now(),
+            index_records_since_flush: 0,
             config,
             segment_size,
             retention_worker,
@@ -634,6 +652,7 @@ impl<C: Clock> QueueWriter<C> {
         MessageHeader::store_commit_len(header_ptr, commit_len);
         self.seek_index
             .observe(header.seq, header.timestamp_ns, offset as u64);
+        self.index_records_since_flush = self.index_records_since_flush.saturating_add(1);
 
         self.seq = self.seq.wrapping_add(1);
         self.write_offset = self
@@ -667,6 +686,7 @@ impl<C: Clock> QueueWriter<C> {
                 self.last_retention_signal_time = Instant::now();
             }
         }
+        self.maybe_flush_index()?;
         Ok(())
     }
 
@@ -762,6 +782,7 @@ impl<C: Clock> QueueWriter<C> {
 
     pub fn flush_sync(&mut self) -> Result<()> {
         self.mmap.flush_sync()?;
+        self.flush_index()?;
         let index_path = self.path.join(INDEX_FILE);
         let index = SegmentIndex::new(self.segment_id as u64, self.write_offset);
         store_index(&index_path, &index)?;
@@ -823,6 +844,8 @@ impl<C: Clock> QueueWriter<C> {
         self.write_offset = SEG_DATA_OFFSET as u64;
         self.seek_index
             .reset(self.segment_id as u64, self.segment_size as u64);
+        self.index_last_flush = Instant::now();
+        self.index_records_since_flush = 0;
         self.control.set_writer_heartbeat_ns(now_ns()?);
 
         self.control
@@ -834,6 +857,34 @@ impl<C: Clock> QueueWriter<C> {
             futex_wake(self.control.notify_seq())?;
         }
         self.trigger_preallocation(next_segment as u64 + 1);
+        Ok(())
+    }
+
+    fn maybe_flush_index(&mut self) -> Result<()> {
+        if self.config.index_flush_interval.is_zero() && self.config.index_flush_records == 0 {
+            return Ok(());
+        }
+        let mut should_flush = false;
+        if self.config.index_flush_records > 0
+            && self.index_records_since_flush >= self.config.index_flush_records
+        {
+            should_flush = true;
+        }
+        if !self.config.index_flush_interval.is_zero()
+            && self.index_last_flush.elapsed() >= self.config.index_flush_interval
+        {
+            should_flush = true;
+        }
+        if should_flush {
+            self.flush_index()?;
+        }
+        Ok(())
+    }
+
+    fn flush_index(&mut self) -> Result<()> {
+        self.seek_index.flush(&self.path)?;
+        self.index_records_since_flush = 0;
+        self.index_last_flush = Instant::now();
         Ok(())
     }
 }

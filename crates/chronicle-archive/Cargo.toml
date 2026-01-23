@@ -1,0 +1,12 @@
+[package]
+name = "chronicle-archive"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chronicle-core = { path = "../chronicle-core" }
+anyhow = "1"
+
+[[bin]]
+name = "archive-tap"
+path = "src/main.rs"

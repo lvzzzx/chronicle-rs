@@ -84,6 +84,14 @@ Suggested module split and APIs:
         - Chooses cadence (fixed sleep, inotify, exponential backoff, etc.)
         - Pins hot thread and chooses wait strategy (busy spin or hybrid)
 
+2.4 Hot IPC vs Archive Storage (Two-Tier Layout)
+
+To avoid conflicting goals between low-latency IPC and long-term storage, Chronicle uses a two-tier queue layout:
+    - Live queues (hot IPC): short retention, minimal durability overhead.
+    - Archive queues (cold storage): long retention, aggressive indexing and snapshots.
+
+The ArchiveTap process reads the live queue in strict order and re-appends events to the archive queue. Historical imports write directly to the archive queue and bypass live IPC entirely.
+
 ⸻
 
 ## 3. Core Architecture

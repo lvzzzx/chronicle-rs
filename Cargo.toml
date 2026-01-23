@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/chronicle-core",
+    "crates/chronicle-archive",
     "crates/chronicle-bus",
     "crates/chronicle-cli",
     "crates/chronicle-etl",
