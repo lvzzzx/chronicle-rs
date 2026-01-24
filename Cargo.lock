@@ -508,7 +508,10 @@ dependencies = [
  "chronicle-core",
  "chronicle-protocol",
  "chronicle-replay",
+ "clap",
  "parquet",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -553,6 +556,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chronicle-core",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zstd",
 ]
 
 [[package]]

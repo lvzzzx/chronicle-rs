@@ -3,6 +3,12 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chronicle_core::{Queue, ReaderConfig, StartMode, WriterConfig};
 
+mod zstd;
+mod tier;
+
+pub use zstd::{compress_q_to_zst, ZstdBlockReader};
+pub use tier::{TierConfig, TierManager};
+
 pub struct ArchiveTap {
     live_path: PathBuf,
     archive_path: PathBuf,
