@@ -20,9 +20,9 @@ After this refactor, the system supports low-latency live IPC and long-term dura
 
 ## Surprises & Discoveries
 
-Observation: seek index files exist but only flush on segment roll, so active segments can still require linear scan on cold start. Evidence: `crates/chronicle-core/src/writer.rs` only flushes `SeekIndexBuilder` in `roll_segment`.
+Observation: seek index files exist but only flush on segment roll, so active segments can still require linear scan on cold start. Evidence: `crates/1-primitives/chronicle-core/src/writer.rs` only flushes `SeekIndexBuilder` in `roll_segment`.
 
-Observation: snapshot support is implemented but only L2 apply is wired and no production snapshot writer runs in a live path. Evidence: `crates/chronicle-replay/src/snapshot.rs` provides a writer but there is no runtime integration outside tests/benchmarks.
+Observation: snapshot support is implemented but only L2 apply is wired and no production snapshot writer runs in a live path. Evidence: `crates/3-engine/chronicle-replay/src/snapshot.rs` provides a writer but there is no runtime integration outside tests/benchmarks.
 
 ## Decision Log
 
@@ -36,9 +36,9 @@ Not executed yet. This section will be updated after implementation milestones c
 
 ## Context and Orientation
 
-Chronicle currently provides a persisted mmap queue with per-reader offsets, segment rolling, and retention. Core data plane lives in `crates/chronicle-core` (writer/reader, seek index, retention). Replay and snapshots live in `crates/chronicle-replay`, but only L2 replay is implemented. The bus layer in `crates/chronicle-bus` defines directory layouts and discovery helpers for live processes. The protocol for book events is defined in `crates/chronicle-protocol`.
+Chronicle currently provides a persisted mmap queue with per-reader offsets, segment rolling, and retention. Core data plane lives in `crates/1-primitives/chronicle-core` (writer/reader, seek index, retention). Replay and snapshots live in `crates/3-engine/chronicle-replay`, but only L2 replay is implemented. The bus layer in `crates/2-infra/chronicle-bus` defines directory layouts and discovery helpers for live processes. The protocol for book events is defined in `crates/1-primitives/chronicle-protocol`.
 
-Relevant files include `crates/chronicle-core/src/writer.rs`, `crates/chronicle-core/src/reader.rs`, `crates/chronicle-core/src/seek_index.rs`, `crates/chronicle-core/src/retention.rs`, `crates/chronicle-replay/src/lib.rs`, `crates/chronicle-replay/src/snapshot.rs`, `crates/chronicle-bus/src/layout.rs`, and `crates/chronicle-protocol/src/lib.rs`.
+Relevant files include `crates/1-primitives/chronicle-core/src/writer.rs`, `crates/1-primitives/chronicle-core/src/reader.rs`, `crates/1-primitives/chronicle-core/src/seek_index.rs`, `crates/1-primitives/chronicle-core/src/retention.rs`, `crates/3-engine/chronicle-replay/src/lib.rs`, `crates/3-engine/chronicle-replay/src/snapshot.rs`, `crates/2-infra/chronicle-bus/src/layout.rs`, and `crates/1-primitives/chronicle-protocol/src/lib.rs`.
 
 ## Plan of Work
 
@@ -58,16 +58,16 @@ Milestone 5 adds tests and documentation updates across `docs/` and `README.md` 
 
 Milestone 1: archive layout and ArchiveTap
 
-Update `crates/chronicle-bus/src/layout.rs` to support an archive root. Add a new layout path like `<bus-root>/archive/<stream>/queue/`. Create a new crate `crates/chronicle-archive` with a binary `archive-tap`. Implement `archive-tap` as a single-threaded loop that opens a hot queue reader and an archive queue writer, writes type_id and payload into the archive, and commits the reader offset after successful writes. Add CLI flags `--live`, `--archive`, and `--start` to control queue paths and reader start mode.
+Update `crates/2-infra/chronicle-bus/src/layout.rs` to support an archive root. Add a new layout path like `<bus-root>/archive/<stream>/queue/`. Create a new crate `crates/2-infra/chronicle-storage` with a binary `archive-tap`. Implement `archive-tap` as a single-threaded loop that opens a hot queue reader and an archive queue writer, writes type_id and payload into the archive, and commits the reader offset after successful writes. Add CLI flags `--live`, `--archive`, and `--start` to control queue paths and reader start mode.
 
 Expected command (run from repo root):
-    cargo run -p chronicle-archive -- --live ./demo_bus/live/market_data/queue/demo_feed --archive ./demo_bus/archive/market_data/queue/demo_feed
+    cargo run -p chronicle-storage -- --live ./demo_bus/live/market_data/queue/demo_feed --archive ./demo_bus/archive/market_data/queue/demo_feed
 
 Expected behavior: the archive queue grows even if no replay or ETL processes are running, and hot queue retention is unaffected by archive readers.
 
 Milestone 2: snapshot production (archive)
 
-Add a Snapshotter module to `crates/chronicle-replay` or a new `crates/chronicle-snapshot` crate. The Snapshotter reads the archive queue, rebuilds the L2 book, and writes snapshots using `SnapshotWriter`. Trigger snapshots via `SnapshotPlanner` based on minimum interval, records, or bytes. Add a CLI binary that takes `--archive`, `--venue`, `--market`, and `--interval`. L2 snapshots are required and are implemented using `L2Snapshot` from `crates/chronicle-protocol/src/lib.rs`.
+Add a Snapshotter module to `crates/3-engine/chronicle-replay` or a new `crates/3-engine/chronicle-snapshot` crate. The Snapshotter reads the archive queue, rebuilds the L2 book, and writes snapshots using `SnapshotWriter`. Trigger snapshots via `SnapshotPlanner` based on minimum interval, records, or bytes. Add a CLI binary that takes `--archive`, `--venue`, `--market`, and `--interval`. L2 snapshots are required and are implemented using `L2Snapshot` from `crates/1-primitives/chronicle-protocol/src/lib.rs`.
 
 Expected command:
     cargo run -p chronicle-replay --example snapshotter -- --archive ./demo_bus/archive/market_data/queue/demo_feed --venue 1 --market 1
@@ -76,13 +76,13 @@ Expected behavior: snapshots appear under `<archive-root>/snapshots/<venue>/<mar
 
 Milestone 3: index flush policy for active segment
 
-Extend `WriterConfig` in `crates/chronicle-core/src/writer.rs` with a new flush policy (interval or record count). Update the writer loop to flush `SeekIndexBuilder` periodically, not only on segment roll. Use conservative defaults for hot IPC and aggressive defaults for archive.
+Extend `WriterConfig` in `crates/1-primitives/chronicle-core/src/writer.rs` with a new flush policy (interval or record count). Update the writer loop to flush `SeekIndexBuilder` periodically, not only on segment roll. Use conservative defaults for hot IPC and aggressive defaults for archive.
 
 Expected behavior: `seek_seq` and `seek_timestamp` converge faster without scanning large active tails.
 
 Milestone 4: historical import path
 
-Add a `chronicle-import` binary (new crate or inside `crates/chronicle-archive`). Provide adapters that map vendor data into `BookEventHeader` plus payload, then write directly to the archive queue using the durable writer profile. Enforce gap checks and sequence continuity during import. This path bypasses hot IPC.
+Add a `chronicle-import` binary (new crate or inside `crates/2-infra/chronicle-storage`). Provide adapters that map vendor data into `BookEventHeader` plus payload, then write directly to the archive queue using the durable writer profile. Enforce gap checks and sequence continuity during import. This path bypasses hot IPC.
 
 Expected behavior: a historical file can be ingested into archive without touching the live queue, and replay from earliest reconstructs the book deterministically.
 
@@ -96,7 +96,7 @@ Run these commands from repo root.
 
 1) Live to archive bridge works:
     cargo run -p chronicle-bus --example feed -- --bus-root ./demo_bus
-    cargo run -p chronicle-archive -- --live ./demo_bus/live/market_data/queue/demo_feed --archive ./demo_bus/archive/market_data/queue/demo_feed
+    cargo run -p chronicle-storage -- --live ./demo_bus/live/market_data/queue/demo_feed --archive ./demo_bus/archive/market_data/queue/demo_feed
     cargo run -p chronicle-cli -- tail ./demo_bus/archive/market_data/queue/demo_feed --limit 3
 
 Accept if `chronicle-cli -- tail` shows new records in the archive queue.
@@ -125,8 +125,8 @@ Example ArchiveTap log snippet:
 
 ## Interfaces and Dependencies
 
-Define a new `crates/chronicle-archive` crate that depends on `chronicle-core` and uses `QueueReader` and `QueueWriter`. The crate exports `ArchiveTap` in `crates/chronicle-archive/src/lib.rs` with `pub fn run(&mut self) -> Result<()>` and a CLI binary in `crates/chronicle-archive/src/main.rs` that accepts `--live`, `--archive`, and `--start` flags.
+Define a new `crates/2-infra/chronicle-storage` crate that depends on `chronicle-core` and uses `QueueReader` and `QueueWriter`. The crate exports `ArchiveTap` in `crates/2-infra/chronicle-storage/src/lib.rs` with `pub fn run(&mut self) -> Result<()>` and a CLI binary in `crates/2-infra/chronicle-storage/src/main.rs` that accepts `--live`, `--archive`, and `--start` flags.
 
-Extend `WriterConfig` in `crates/chronicle-core/src/writer.rs` with an index flush policy and implement a `flush_index` helper to write `.idx` files without rolling segments. Use this in the archive writer profile and keep the hot IPC profile minimal.
+Extend `WriterConfig` in `crates/1-primitives/chronicle-core/src/writer.rs` with an index flush policy and implement a `flush_index` helper to write `.idx` files without rolling segments. Use this in the archive writer profile and keep the hot IPC profile minimal.
 
-Snapshot production uses `SnapshotWriter`, `SnapshotPlanner`, and `L2Snapshot` in `crates/chronicle-replay/src/snapshot.rs` and `crates/chronicle-protocol/src/lib.rs`. No external services are required; all operations are single-host and filesystem-based.
+Snapshot production uses `SnapshotWriter`, `SnapshotPlanner`, and `L2Snapshot` in `crates/3-engine/chronicle-replay/src/snapshot.rs` and `crates/1-primitives/chronicle-protocol/src/lib.rs`. No external services are required; all operations are single-host and filesystem-based.

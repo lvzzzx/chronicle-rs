@@ -11,8 +11,8 @@ The goal is to split the current single-crate repository into a Rust workspace w
 ## Progress
 
 - [x] (2026-01-16 00:00Z) Capture current state and decisions for the core+bus split in this ExecPlan.
-- [x] (2026-01-16 00:40Z) Convert the repository root into a workspace and move the current core crate into crates/chronicle-core.
-- [x] (2026-01-16 00:45Z) Introduce crates/chronicle-bus with the minimal module skeleton described in the design and a dependency on chronicle-core.
+- [x] (2026-01-16 00:40Z) Convert the repository root into a workspace and move the current core crate into crates/1-primitives/chronicle-core.
+- [x] (2026-01-16 00:45Z) Introduce crates/2-infra/chronicle-bus with the minimal module skeleton described in the design and a dependency on chronicle-core.
 - [x] (2026-01-16 00:50Z) Validate the workspace builds and tests, and record evidence in this plan.
 
 ## Surprises & Discoveries
@@ -22,7 +22,7 @@ The goal is to split the current single-crate repository into a Rust workspace w
 
 ## Decision Log
 
-- Decision: Use a workspace-only root and two crates at crates/chronicle-core and crates/chronicle-bus, with chronicle-bus depending on chronicle-core.
+- Decision: Use a workspace-only root and two crates at crates/1-primitives/chronicle-core and crates/2-infra/chronicle-bus, with chronicle-bus depending on chronicle-core.
   Rationale: The design already specifies this layout, it keeps the hot path isolated, and shared types should not be duplicated.
   Date/Author: 2026-01-16, Codex
 - Decision: Rename the core crate to chronicle-core and update tests to use chronicle_core paths.
@@ -34,33 +34,33 @@ The goal is to split the current single-crate repository into a Rust workspace w
 
 ## Outcomes & Retrospective
 
-The repository is now a workspace with chronicle-core and chronicle-bus crates. Core sources and tests live under crates/chronicle-core, and the bus helper crate exists with minimal ready/lease/registration/discovery modules. The workspace builds and chronicle-core tests pass. No compatibility shim crate exists yet; add one later if external users require the chronicle crate name.
+The repository is now a workspace with chronicle-core and chronicle-bus crates. Core sources and tests live under crates/1-primitives/chronicle-core, and the bus helper crate exists with minimal ready/lease/registration/discovery modules. The workspace builds and chronicle-core tests pass. No compatibility shim crate exists yet; add one later if external users require the chronicle crate name.
 
 ## Context and Orientation
 
-The repository is now a workspace with a root Cargo.toml listing crates/chronicle-core and crates/chronicle-bus. The chronicle-core crate contains the queue implementation under crates/chronicle-core/src and its tests under crates/chronicle-core/tests. The chronicle-bus crate lives under crates/chronicle-bus/src and provides stubbed helper modules for layout, readiness, leases, discovery, and registration. The design document at docs/DESIGN.md still describes the split and matches the new layout.
+The repository is now a workspace with a root Cargo.toml listing crates/1-primitives/chronicle-core and crates/2-infra/chronicle-bus. The chronicle-core crate contains the queue implementation under crates/1-primitives/chronicle-core/src and its tests under crates/1-primitives/chronicle-core/tests. The chronicle-bus crate lives under crates/2-infra/chronicle-bus/src and provides stubbed helper modules for layout, readiness, leases, discovery, and registration. The design document at docs/DESIGN.md still describes the split and matches the new layout.
 
 Definitions:
 
-A Rust workspace is a top-level Cargo.toml that lists member crates and allows building them together. A crate is a Rust package with its own Cargo.toml and src/ tree. In this plan, the root becomes a workspace and the existing crate moves to crates/chronicle-core.
+A Rust workspace is a top-level Cargo.toml that lists member crates and allows building them together. A crate is a Rust package with its own Cargo.toml and src/ tree. In this plan, the root becomes a workspace and the existing crate moves to crates/1-primitives/chronicle-core.
 
 ## Plan of Work
 
-First, create a workspace root by replacing the root Cargo.toml with a workspace manifest that lists crates/chronicle-core and crates/chronicle-bus as members. Move the current crate into crates/chronicle-core, keeping its Cargo metadata and public API intact. Update any paths that assume src/ lives at the repository root, including tests and references in documentation or scripts. Next, create a new crates/chronicle-bus crate with minimal module files matching the design section for layout, ready/lease helpers, discovery, and registration. The bus crate should declare a dependency on chronicle-core so it can open queues and use shared types. Finally, build and test the workspace to verify the split is correct, and record the command outputs in the Artifacts section.
+First, create a workspace root by replacing the root Cargo.toml with a workspace manifest that lists crates/1-primitives/chronicle-core and crates/2-infra/chronicle-bus as members. Move the current crate into crates/1-primitives/chronicle-core, keeping its Cargo metadata and public API intact. Update any paths that assume src/ lives at the repository root, including tests and references in documentation or scripts. Next, create a new crates/2-infra/chronicle-bus crate with minimal module files matching the design section for layout, ready/lease helpers, discovery, and registration. The bus crate should declare a dependency on chronicle-core so it can open queues and use shared types. Finally, build and test the workspace to verify the split is correct, and record the command outputs in the Artifacts section.
 
 ## Concrete Steps
 
 Work in the repository root: /Users/zjx/Documents/chronicle-rs.
 
 1) Create the workspace structure and move the core crate.
-   - Create crates/chronicle-core and move the current src/ there.
-   - Move the current root Cargo.toml into crates/chronicle-core/Cargo.toml.
-   - Replace the root Cargo.toml with a workspace manifest that lists crates/chronicle-core and crates/chronicle-bus.
-   - If there are tests under tests/, decide whether they are core tests; if so, move them under crates/chronicle-core/tests/ and update any path assumptions.
+   - Create crates/1-primitives/chronicle-core and move the current src/ there.
+   - Move the current root Cargo.toml into crates/1-primitives/chronicle-core/Cargo.toml.
+   - Replace the root Cargo.toml with a workspace manifest that lists crates/1-primitives/chronicle-core and crates/2-infra/chronicle-bus.
+   - If there are tests under tests/, decide whether they are core tests; if so, move them under crates/1-primitives/chronicle-core/tests/ and update any path assumptions.
 
 2) Add the chronicle-bus crate skeleton.
-   - Create crates/chronicle-bus/Cargo.toml with standard package metadata and a dependency on chronicle-core via a path dependency.
-   - Create crates/chronicle-bus/src/lib.rs and the module files layout.rs, ready.rs, lease.rs, discovery.rs, and registration.rs with empty or minimal stub implementations.
+   - Create crates/2-infra/chronicle-bus/Cargo.toml with standard package metadata and a dependency on chronicle-core via a path dependency.
+   - Create crates/2-infra/chronicle-bus/src/lib.rs and the module files layout.rs, ready.rs, lease.rs, discovery.rs, and registration.rs with empty or minimal stub implementations.
    - Ensure the module tree compiles by re-exporting or defining minimal structs and functions described in the design.
 
 3) Update references and documentation.
@@ -83,7 +83,7 @@ Record short output snippets in Artifacts and update Progress.
 
 Acceptance is met when:
 
-The workspace root Cargo.toml lists chronicle-core and chronicle-bus as members, the chronicle-core crate builds and tests cleanly with cargo test -p chronicle-core, and the chronicle-bus crate builds with cargo build -p chronicle-bus. The source tree should show crates/chronicle-core/src containing the existing queue code, and crates/chronicle-bus/src containing the new helper modules.
+The workspace root Cargo.toml lists chronicle-core and chronicle-bus as members, the chronicle-core crate builds and tests cleanly with cargo test -p chronicle-core, and the chronicle-bus crate builds with cargo build -p chronicle-bus. The source tree should show crates/1-primitives/chronicle-core/src containing the existing queue code, and crates/2-infra/chronicle-bus/src containing the new helper modules.
 
 If tests are not present, document that cargo test -p chronicle-core completes with zero tests run, and that cargo build -p chronicle-core succeeds. Capture those outputs in Artifacts.
 
@@ -96,11 +96,11 @@ All steps are safe to re-run. If a move goes wrong, revert by moving files back 
 Command transcripts from validation:
 
     $ cargo build -p chronicle-core
-       Compiling chronicle-core v0.1.0 (/Users/zjx/Documents/chronicle-rs/crates/chronicle-core)
+       Compiling chronicle-core v0.1.0 (/Users/zjx/Documents/chronicle-rs/crates/1-primitives/chronicle-core)
         Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.47s
 
     $ cargo test -p chronicle-core
-       Compiling chronicle-core v0.1.0 (/Users/zjx/Documents/chronicle-rs/crates/chronicle-core)
+       Compiling chronicle-core v0.1.0 (/Users/zjx/Documents/chronicle-rs/crates/1-primitives/chronicle-core)
         Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
          Running unittests src/lib.rs (target/debug/deps/chronicle_core-7caf67f903ec7936)
 
@@ -180,12 +180,12 @@ Command transcripts from validation:
     test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
     $ cargo build -p chronicle-bus
-       Compiling chronicle-bus v0.1.0 (/Users/zjx/Documents/chronicle-rs/crates/chronicle-bus)
+       Compiling chronicle-bus v0.1.0 (/Users/zjx/Documents/chronicle-rs/crates/2-infra/chronicle-bus)
         Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.21s
 
 ## Interfaces and Dependencies
 
-chronicle-core should continue to export the core API under crates/chronicle-core/src/lib.rs, including Queue, QueueWriter, QueueReader, MessageView, and WaitStrategy. chronicle-bus should declare a dependency on chronicle-core in crates/chronicle-bus/Cargo.toml using a path dependency.
+chronicle-core should continue to export the core API under crates/1-primitives/chronicle-core/src/lib.rs, including Queue, QueueWriter, QueueReader, MessageView, and WaitStrategy. chronicle-bus should declare a dependency on chronicle-core in crates/2-infra/chronicle-bus/Cargo.toml using a path dependency.
 
 At minimum, chronicle-bus/src/lib.rs should declare the modules layout, ready, lease, discovery, and registration so downstream code can import them as chronicle_bus::layout, chronicle_bus::ready, and so on. The module contents can start as minimal stubs that compile but must align with the names in docs/DESIGN.md to avoid future renames.
 

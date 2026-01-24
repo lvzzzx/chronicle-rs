@@ -5,7 +5,7 @@ Implement a high-performance, standalone market data feed adapter for Binance Sp
 
 ## Architecture
 
-We will introduce a new crate `crates/chronicle-feed-binance` to keep the ecosystem modular.
+We will introduce a new crate `crates/4-app/chronicle-feed-binance` to keep the ecosystem modular.
 
 ### components
 1.  **Transport**: `tokio` + `tokio-tungstenite` for async WebSocket management.
@@ -19,7 +19,7 @@ We will introduce a new crate `crates/chronicle-feed-binance` to keep the ecosys
 ## Implementation Details
 
 ### 1. New Crate
-`crates/chronicle-feed-binance`
+`crates/4-app/chronicle-feed-binance`
 
 ### 2. Configuration
 -   **Exchange**: Binance (URL hardcoded or config).
@@ -52,7 +52,7 @@ struct BookTicker {
 
 ## Steps
 
-1.  [ ] Create `crates/chronicle-feed-binance` skeleton.
+1.  [ ] Create `crates/4-app/chronicle-feed-binance` skeleton.
 2.  [ ] Define `MarketEvent` binary format.
 3.  [ ] Implement `BinanceClient` with `tokio-tungstenite`.
 4.  [ ] Implement `ChroniclePublisher` adapter.

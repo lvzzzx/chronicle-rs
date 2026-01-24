@@ -6,13 +6,13 @@ This document must be maintained in accordance with `PLANS.md` at the repository
 
 ## Purpose / Big Picture
 
-Implement queue discovery (scan + watch + READY markers) in `crates/chronicle-bus` so a router can attach/detach strategy queues without restarts. This ExecPlan tracks the Phase 7 implementation in this workspace after the control-plane split in `docs/DESIGN.md`.
+Implement queue discovery (scan + watch + READY markers) in `crates/2-infra/chronicle-bus` so a router can attach/detach strategy queues without restarts. This ExecPlan tracks the Phase 7 implementation in this workspace after the control-plane split in `docs/DESIGN.md`.
 
 ## Progress
 
 - [x] (2026-01-15 23:40Z) ExecPlan drafted for Phase 7 queue discovery.
 - [x] (2026-01-16 21:25Z) Scope moved to `chronicle-bus` per `docs/DESIGN.md`.
-- [x] (2026-01-17 23:25Z) Implemented `RouterDiscovery::poll()` with scan + watch + dedup in `crates/chronicle-bus`.
+- [x] (2026-01-17 23:25Z) Implemented `RouterDiscovery::poll()` with scan + watch + dedup in `crates/2-infra/chronicle-bus`.
 - [x] (2026-01-17 23:26Z) Added Linux inotify watcher and periodic rescan fallback; non-Linux uses scan-only.
 
 ## Surprises & Discoveries
@@ -30,11 +30,11 @@ Implement queue discovery (scan + watch + READY markers) in `crates/chronicle-bu
 
 ## Outcomes & Retrospective
 
-`RouterDiscovery::poll()` now performs scan + watch + dedup in `crates/chronicle-bus`, emitting Added/Removed events based on READY markers. Future enhancement: add kqueue watcher for macOS if event-driven discovery is required.
+`RouterDiscovery::poll()` now performs scan + watch + dedup in `crates/2-infra/chronicle-bus`, emitting Added/Removed events based on READY markers. Future enhancement: add kqueue watcher for macOS if event-driven discovery is required.
 
 ## Context and Orientation
 
-`chronicle-core` provides the data plane: on-disk queue format, reader/writer semantics, segment rolling, and fan-in merge. `chronicle-bus` provides control-plane helpers (READY/LEASE markers, discovery, registration). Phase 7 is implemented in `crates/chronicle-bus` within this workspace.
+`chronicle-core` provides the data plane: on-disk queue format, reader/writer semantics, segment rolling, and fan-in merge. `chronicle-bus` provides control-plane helpers (READY/LEASE markers, discovery, registration). Phase 7 is implemented in `crates/2-infra/chronicle-bus` within this workspace.
 
 ## Plan of Work
 
@@ -58,10 +58,10 @@ Completed:
 
 ## Artifacts and Notes
 
-- Implementation: `crates/chronicle-bus/src/discovery.rs`
+- Implementation: `crates/2-infra/chronicle-bus/src/discovery.rs`
 
 ## Interfaces and Dependencies
 
 - Linux builds add a `libc` dependency for inotify in `chronicle-bus`.
 
-Change note: 2026-01-17 updated this ExecPlan to reflect Phase 7 implementation in `crates/chronicle-bus`.
+Change note: 2026-01-17 updated this ExecPlan to reflect Phase 7 implementation in `crates/2-infra/chronicle-bus`.

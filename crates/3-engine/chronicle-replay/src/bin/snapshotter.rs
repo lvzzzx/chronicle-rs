@@ -71,7 +71,7 @@ fn main() -> Result<()> {
                             schema_version: SNAPSHOT_VERSION,
                             endianness: 0,
                             book_mode: BookMode::L2 as u16,
-                            venue_id: config.venue_id,
+                            venue_id: u32::from(config.venue_id),
                             market_id: config.market_id,
                             seq_num: message.msg.seq,
                             ingest_ts_ns_start: window_start_ingest.unwrap_or(ingest_ts),
@@ -103,7 +103,7 @@ fn main() -> Result<()> {
 
 struct CliConfig {
     archive_path: PathBuf,
-    venue_id: u32,
+    venue_id: u16,
     market_id: u32,
     start_mode: StartMode,
     min_interval: Option<Duration>,
@@ -113,7 +113,7 @@ struct CliConfig {
 
 fn parse_args(args: &[String]) -> Result<CliConfig, String> {
     let mut archive_path: Option<PathBuf> = None;
-    let mut venue_id: Option<u32> = None;
+    let mut venue_id: Option<u16> = None;
     let mut market_id: Option<u32> = None;
     let mut start_mode = StartMode::ResumeStrict;
     let mut min_interval = Some(Duration::from_secs(10));
@@ -136,9 +136,9 @@ fn parse_args(args: &[String]) -> Result<CliConfig, String> {
             if i >= args.len() {
                 return Err("missing value for --venue".to_string());
             }
-            venue_id = Some(parse_u32(&args[i], "--venue")?);
+            venue_id = Some(parse_u16(&args[i], "--venue")?);
         } else if let Some(value) = arg.strip_prefix("--venue=") {
-            venue_id = Some(parse_u32(value, "--venue")?);
+            venue_id = Some(parse_u16(value, "--venue")?);
         } else if arg == "--market" {
             i += 1;
             if i >= args.len() {
@@ -211,6 +211,12 @@ fn parse_start_mode(value: &str) -> Result<StartMode, String> {
             "invalid --start value: {value}. Use resume-strict, resume-snapshot, resume-latest, latest, or earliest."
         )),
     }
+}
+
+fn parse_u16(value: &str, flag: &str) -> Result<u16, String> {
+    value
+        .parse::<u16>()
+        .map_err(|_| format!("invalid {flag} value: {value}"))
 }
 
 fn parse_u32(value: &str, flag: &str) -> Result<u32, String> {

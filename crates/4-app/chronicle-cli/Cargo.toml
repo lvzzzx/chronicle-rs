@@ -3,15 +3,11 @@ name = "chronicle-cli"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "chron-cli"
-path = "src/main.rs"
-
 [dependencies]
+chronicle-core = { path = "../../1-primitives/chronicle-core" }
+chronicle-bus = { path = "../../2-infra/chronicle-bus" }
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-chronicle-core = { path = "../chronicle-core" }
-chronicle-bus = { path = "../chronicle-bus" }
 hdrhistogram = "7.5.4"
 ratatui = "0.26.0"
 crossterm = "0.29.0"
-quanta = "0.12.6"

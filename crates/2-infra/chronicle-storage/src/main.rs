@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use chronicle_archive::ArchiveTap;
+use chronicle_storage::ArchiveTap;
 use chronicle_core::StartMode;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,10 +12,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let config = parse_args(&args)?;
-    let tap = ArchiveTap::new(config.live_path, config.archive_path)
-        .reader_name(config.reader_name)
-        .start_mode(config.start_mode);
-
     println!(
         "archive-tap: live={} archive={} reader={} start={:?}",
         config.live_path.display(),
@@ -23,6 +19,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.reader_name,
         config.start_mode
     );
+
+    let tap = ArchiveTap::new(config.live_path, config.archive_path)
+        .reader_name(config.reader_name)
+        .start_mode(config.start_mode);
 
     tap.run()?;
     Ok(())

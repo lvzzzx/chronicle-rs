@@ -48,11 +48,11 @@ Both message types use the same wire layout:
 ### Step 1: Dependencies
 - Add `reqwest` (blocking or async) to `chronicle-feed-binance` for fetching the snapshot.
 
-### Step 2: Market Module Updates (`crates/chronicle-feed-binance/src/market.rs`)
+### Step 2: Market Module Updates (`crates/4-app/chronicle-feed-binance/src/market.rs`)
 - Define `PriceLevel` and `DepthHeader`.
 - Add `MarketMessageType::DepthUpdate` and `MarketMessageType::OrderBookSnapshot`.
 
-### Step 3: Snapshot & Sync Logic (`crates/chronicle-feed-binance/src/binance.rs`)
+### Step 3: Snapshot & Sync Logic (`crates/4-app/chronicle-feed-binance/src/binance.rs`)
 - **State Machine:**
     - `Connecting`: Establish WS connection.
     - `Buffering`: Accumulate WS events while fetching REST snapshot.

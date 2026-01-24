@@ -1,0 +1,17 @@
+[package]
+name = "chronicle-replay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chronicle-core = { path = "../../1-primitives/chronicle-core" }
+chronicle-protocol = { path = "../../1-primitives/chronicle-protocol" }
+anyhow = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3"
+
+[[bench]]
+name = "warm_start"
+harness = false

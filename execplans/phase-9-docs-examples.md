@@ -11,7 +11,7 @@ After this change, a user can run three example processes (feed, strategy, route
 ## Progress
 
 - [x] (2026-01-17 23:40Z) Drafted Phase 9 ExecPlan with scope, milestones, and acceptance criteria.
-- [x] (2026-01-17 23:58Z) Implemented example binaries in `crates/chronicle-bus/examples` (`feed`, `strategy`, `router`).
+- [x] (2026-01-17 23:58Z) Implemented example binaries in `crates/2-infra/chronicle-bus/examples` (`feed`, `strategy`, `router`).
 - [x] (2026-01-17 23:59Z) Updated `README.md`, `docs/DESIGN.md`, and `docs/ROADMAP.md` to reflect examples and layout.
 - [ ] Validate by running the three processes and capturing expected output for the docs (completed: `cargo test -p chronicle-bus`; remaining: run the three example binaries concurrently).
 
@@ -21,7 +21,7 @@ None yet.
 
 ## Decision Log
 
-- Decision: Place the examples under `crates/chronicle-bus/examples` instead of a workspace-root `examples/` directory.
+- Decision: Place the examples under `crates/2-infra/chronicle-bus/examples` instead of a workspace-root `examples/` directory.
   Rationale: The workspace root is not a Cargo package, so root-level examples would not compile. `chronicle-bus` already depends on `chronicle-core`, so example binaries can use both crates without adding new packages.
   Date/Author: 2026-01-17, Codex
 - Decision: Use simple ASCII payloads (key=value text) instead of JSON to avoid adding dependencies.
@@ -37,13 +37,13 @@ Pending implementation. This section will summarize what users can run, what doc
 
 ## Context and Orientation
 
-The workspace contains two crates: `crates/chronicle-core` (data-plane queue storage and reader/writer APIs) and `crates/chronicle-bus` (control-plane helpers like discovery and READY markers). `chronicle-bus` exposes `RouterDiscovery`, `BusLayout`, and `ReaderRegistration` in `crates/chronicle-bus/src`. The queue API lives in `crates/chronicle-core/src/writer.rs` (`Queue::open_publisher`) and `crates/chronicle-core/src/reader.rs` (`Queue::open_subscriber`, `QueueReader::next`, `QueueReader::wait`, `QueueReader::commit`). The discovery helper uses READY files under `orders/queue/<strategy>/orders_out/READY`, so the examples must create that file with `BusLayout::mark_ready`.
+The workspace contains two crates: `crates/1-primitives/chronicle-core` (data-plane queue storage and reader/writer APIs) and `crates/2-infra/chronicle-bus` (control-plane helpers like discovery and READY markers). `chronicle-bus` exposes `RouterDiscovery`, `BusLayout`, and `ReaderRegistration` in `crates/2-infra/chronicle-bus/src`. The queue API lives in `crates/1-primitives/chronicle-core/src/writer.rs` (`Queue::open_publisher`) and `crates/1-primitives/chronicle-core/src/reader.rs` (`Queue::open_subscriber`, `QueueReader::next`, `QueueReader::wait`, `QueueReader::commit`). The discovery helper uses READY files under `orders/queue/<strategy>/orders_out/READY`, so the examples must create that file with `BusLayout::mark_ready`.
 
 The goal for Phase 9 is to add runnable example binaries and update docs so a new user can follow one set of instructions to watch messages flow from feed to strategy to router and observe discovery events.
 
 ## Plan of Work
 
-Create three example binaries under `crates/chronicle-bus/examples` named `feed.rs`, `strategy.rs`, and `router.rs`. Each will parse a small set of command-line arguments using `std::env::args` (no external CLI dependency). Use a shared bus root directory argument (`--bus-root`) with a default of `./demo_bus` so the example can run in a local checkout without special privileges. The examples will use simple text payloads formatted as `key=value` pairs to keep parsing trivial.
+Create three example binaries under `crates/2-infra/chronicle-bus/examples` named `feed.rs`, `strategy.rs`, and `router.rs`. Each will parse a small set of command-line arguments using `std::env::args` (no external CLI dependency). Use a shared bus root directory argument (`--bus-root`) with a default of `./demo_bus` so the example can run in a local checkout without special privileges. The examples will use simple text payloads formatted as `key=value` pairs to keep parsing trivial.
 
 For `feed.rs`, open a publisher queue at `<bus_root>/market_data/queue/demo_feed` and append market data messages on a fixed interval (for example every 200ms). Each message should include a symbol and price, alternating among a small fixed list (BTC, ETH, SOL). Log each publish to stdout.
 
@@ -61,9 +61,9 @@ Work from the repo root.
 
 1) Create the example binaries.
 
-    - Add `crates/chronicle-bus/examples/feed.rs`.
-    - Add `crates/chronicle-bus/examples/strategy.rs`.
-    - Add `crates/chronicle-bus/examples/router.rs`.
+    - Add `crates/2-infra/chronicle-bus/examples/feed.rs`.
+    - Add `crates/2-infra/chronicle-bus/examples/strategy.rs`.
+    - Add `crates/2-infra/chronicle-bus/examples/router.rs`.
 
 2) Update documentation.
 

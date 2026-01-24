@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - Cargo workspace at the repo root (`Cargo.toml`).
-- Rust crates live under `crates/` (currently `crates/chronicle-core` and `crates/chronicle-bus`).
+- Rust crates live under `crates/` with layered folders (`crates/1-primitives`, `crates/2-infra`, `crates/3-engine`, `crates/4-app`).
 - Architecture documentation lives in `docs/` (notably `docs/DESIGN.md`).
 - Persistent queue data is designed to live under paths like `/var/lib/hft_bus/<bus>/queue/` with per-writer segments and per-reader metadata.
 
@@ -24,7 +24,7 @@
 
 ## Testing Guidelines
 - Prefer `#[cfg(test)]` unit tests near implementation and integration tests in each crate’s `tests/` directory.
-- Follow existing naming patterns (e.g., `reader_recovery.rs` under `crates/chronicle-core/tests/`).
+- Follow existing naming patterns (e.g., `reader_recovery.rs` under `crates/1-primitives/chronicle-core/tests/`).
 
 ## Commit & Pull Request Guidelines
 - Current history uses short, imperative messages; one commit uses a `docs:` prefix. Follow that pattern when appropriate (e.g., `docs: clarify segment rolling`).

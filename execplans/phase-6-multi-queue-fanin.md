@@ -12,8 +12,8 @@ Phase 6 lets a single reader consume messages from multiple queue directories in
 
 - [x] (2026-01-15 22:30Z) ExecPlan created for Phase 6 multi-queue fan-in (Fan-In Reader).
 - [x] (2026-01-15 23:10Z) Writer timestamps added via `append_with_timestamp`; `append` uses wall-clock time.
-- [x] (2026-01-15 23:12Z) Fan-in merge implemented in `crates/chronicle-core/src/merge.rs` using `MessageView`.
-- [x] (2026-01-15 23:14Z) Added fan-in ordering tests in `crates/chronicle-core/tests/merge_fanin.rs`.
+- [x] (2026-01-15 23:12Z) Fan-in merge implemented in `crates/1-primitives/chronicle-core/src/merge.rs` using `MessageView`.
+- [x] (2026-01-15 23:14Z) Added fan-in ordering tests in `crates/1-primitives/chronicle-core/tests/merge_fanin.rs`.
 - [x] (2026-01-16 21:20Z) ExecPlan updated to reflect the current implementation and file paths.
 
 ## Surprises & Discoveries
@@ -37,27 +37,27 @@ None yet. Capture any tricky ordering edge cases or metadata/segment interaction
 
 ## Outcomes & Retrospective
 
-Phase 6 delivered: writer timestamps are real-time or injected for tests, and fan-in merges by `(timestamp_ns, source_index)`. Tests validate merge order and empty behavior. The implementation lives under `crates/chronicle-core/src/merge.rs` with integration tests in `crates/chronicle-core/tests/merge_fanin.rs`.
+Phase 6 delivered: writer timestamps are real-time or injected for tests, and fan-in merges by `(timestamp_ns, source_index)`. Tests validate merge order and empty behavior. The implementation lives under `crates/1-primitives/chronicle-core/src/merge.rs` with integration tests in `crates/1-primitives/chronicle-core/tests/merge_fanin.rs`.
 
 ## Context and Orientation
 
-The repository currently implements a single-queue reader and writer with segment rolling. `crates/chronicle-core/src/header.rs` defines `MessageHeader` containing `timestamp_ns`, `crates/chronicle-core/src/writer.rs` stamps headers with real-time or injected timestamps, and `crates/chronicle-core/src/reader.rs` returns `MessageView` entries that expose timestamp/sequence/type alongside payload. `crates/chronicle-core/src/merge.rs` contains the fan-in merge logic that orders messages across multiple queues by timestamp. Each queue still maintains its own `readers/<name>.meta` file for reader progress.
+The repository currently implements a single-queue reader and writer with segment rolling. `crates/1-primitives/chronicle-core/src/header.rs` defines `MessageHeader` containing `timestamp_ns`, `crates/1-primitives/chronicle-core/src/writer.rs` stamps headers with real-time or injected timestamps, and `crates/1-primitives/chronicle-core/src/reader.rs` returns `MessageView` entries that expose timestamp/sequence/type alongside payload. `crates/1-primitives/chronicle-core/src/merge.rs` contains the fan-in merge logic that orders messages across multiple queues by timestamp. Each queue still maintains its own `readers/<name>.meta` file for reader progress.
 
 Terminology used in this plan:
 “Fan-in” means consuming from multiple independent queues and producing a single ordered stream. “Fan-In Reader” is the merged reader that performs this fan-in by comparing timestamps. “Pending message” means a message already read from a queue and held in memory until it is selected for delivery.
 
 ## Plan of Work
 
-If re-implementing or extending this phase, make sure the writer stamps `timestamp_ns` in the header and allows deterministic injection via `append_with_timestamp` in `crates/chronicle-core/src/writer.rs`. Keep `QueueReader::next` returning `MessageView` in `crates/chronicle-core/src/reader.rs`, since `FanInReader` relies on it to fill pending buffers. Implement fan-in logic in `crates/chronicle-core/src/merge.rs` by tracking a `Vec<Option<PendingMessage>>`, selecting the smallest `(timestamp_ns, source_index)` each call, and returning a `MergedMessage` with source metadata and payload. Add or update tests in `crates/chronicle-core/tests/merge_fanin.rs` to validate ordering and empty behavior.
+If re-implementing or extending this phase, make sure the writer stamps `timestamp_ns` in the header and allows deterministic injection via `append_with_timestamp` in `crates/1-primitives/chronicle-core/src/writer.rs`. Keep `QueueReader::next` returning `MessageView` in `crates/1-primitives/chronicle-core/src/reader.rs`, since `FanInReader` relies on it to fill pending buffers. Implement fan-in logic in `crates/1-primitives/chronicle-core/src/merge.rs` by tracking a `Vec<Option<PendingMessage>>`, selecting the smallest `(timestamp_ns, source_index)` each call, and returning a `MergedMessage` with source metadata and payload. Add or update tests in `crates/1-primitives/chronicle-core/tests/merge_fanin.rs` to validate ordering and empty behavior.
 
 ## Concrete Steps
 
 Edit or add the following files:
 
-    crates/chronicle-core/src/writer.rs
-    crates/chronicle-core/src/reader.rs
-    crates/chronicle-core/src/merge.rs
-    crates/chronicle-core/tests/merge_fanin.rs
+    crates/1-primitives/chronicle-core/src/writer.rs
+    crates/1-primitives/chronicle-core/src/reader.rs
+    crates/1-primitives/chronicle-core/src/merge.rs
+    crates/1-primitives/chronicle-core/tests/merge_fanin.rs
 
 Run tests from the repository root:
 
@@ -71,7 +71,7 @@ Acceptance is met when:
 1) `QueueWriter::append` stores a non-zero `timestamp_ns` derived from the current time, and `append_with_timestamp` allows deterministic timestamp injection.
 2) `QueueReader::next` returns `MessageView` with `timestamp_ns`, `seq`, and `type_id` alongside payload.
 3) `FanInReader::next` returns merged messages ordered by `(timestamp_ns, source_index)` with no cross-queue reordering or dropped messages.
-4) The tests in `crates/chronicle-core/tests/merge_fanin.rs` fail before the change and pass after, and `cargo test -p chronicle-core` succeeds overall.
+4) The tests in `crates/1-primitives/chronicle-core/tests/merge_fanin.rs` fail before the change and pass after, and `cargo test -p chronicle-core` succeeds overall.
 
 ## Idempotence and Recovery
 
@@ -89,13 +89,13 @@ Expected test output snippets (example):
 
 Implement or expose the following interfaces:
 
-In `crates/chronicle-core/src/writer.rs`:
+In `crates/1-primitives/chronicle-core/src/writer.rs`:
 
     impl QueueWriter {
         pub fn append_with_timestamp(&mut self, type_id: u16, payload: &[u8], timestamp_ns: u64) -> Result<()>;
     }
 
-In `crates/chronicle-core/src/reader.rs`:
+In `crates/1-primitives/chronicle-core/src/reader.rs`:
 
     pub struct MessageView<'a> {
         pub seq: u64,
@@ -108,7 +108,7 @@ In `crates/chronicle-core/src/reader.rs`:
         pub fn next(&mut self) -> Result<Option<MessageView<'_>>>;
     }
 
-In `crates/chronicle-core/src/merge.rs`:
+In `crates/1-primitives/chronicle-core/src/merge.rs`:
 
     pub struct MergedMessage {
         pub source: usize,
@@ -126,4 +126,4 @@ In `crates/chronicle-core/src/merge.rs`:
 
 No new external dependencies are required. Use the standard library for time (`std::time::SystemTime`) and existing crate modules (`crate::reader`, `crate::header`).
 
-Change note: 2026-01-16 updated this plan to match the current implementation (paths under `crates/chronicle-core`, `MessageView`-based fan-in, and the existing test locations).
+Change note: 2026-01-16 updated this plan to match the current implementation (paths under `crates/1-primitives/chronicle-core`, `MessageView`-based fan-in, and the existing test locations).

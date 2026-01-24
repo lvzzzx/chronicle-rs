@@ -44,7 +44,7 @@ This is a Rust workspace. Standard Cargo commands apply.
     ```bash
     cargo test --workspace
     ```
-    *   *Note:* Integration tests are located in `crates/chronicle-core/tests/` and cover scenarios like recovery, fan-in, and retention.
+    *   *Note:* Integration tests are located in `crates/1-primitives/chronicle-core/tests/` and cover scenarios like recovery, fan-in, and retention.
 
 *   **Run Benchmarks:**
     ```bash
@@ -62,8 +62,18 @@ This is a Rust workspace. Standard Cargo commands apply.
 ```text
 chronicle-rs/
 ├── crates/
-│   ├── chronicle-core/       # Data plane: Queue engine, storage format, append/read logic
-│   └── chronicle-bus/        # Control plane: Directory layout, discovery, registration
+│   ├── 1-primitives/
+│   │   ├── chronicle-core/       # Data plane: Queue engine, storage format, append/read logic
+│   │   └── chronicle-protocol/   # Wire format and message schemas
+│   ├── 2-infra/
+│   │   ├── chronicle-bus/        # Control plane: Directory layout, discovery, registration
+│   │   └── chronicle-storage/    # Archive/tiering access
+│   ├── 3-engine/
+│   │   └── chronicle-replay/     # Replay and state reconstruction
+│   └── 4-app/
+│       ├── chronicle-cli/        # CLI tooling
+│       ├── chronicle-etl/        # Batch ETL
+│       └── chronicle-feed-binance/ # Binance feed adapter
 ├── docs/
 │   ├── DESIGN.md             # Normative architectural specification (READ THIS FIRST)
 │   └── ROADMAP.md            # Project milestones and status
@@ -78,7 +88,7 @@ chronicle-rs/
 3.  **Safety First:** This project uses `unsafe` for mmap and atomic operations. Comments must justify safety. Miri checks are encouraged where feasible.
 4.  **Testing:**
     -   **Unit Tests:** Inside `src/` modules.
-    -   **Integration Tests:** In `crates/chronicle-core/tests/`. Focus on resilience (recovery, disk full, concurrent rolling).
+    -   **Integration Tests:** In `crates/1-primitives/chronicle-core/tests/`. Focus on resilience (recovery, disk full, concurrent rolling).
 5.  **Code Style:** Standard Rust style. No unique formatting rules.
 
 ## Documentation

@@ -88,8 +88,8 @@ See [DESIGN.md](docs/DESIGN.md) for the complete architectural specification.
 
 ```toml
 [dependencies]
-chronicle-core = { path = "crates/chronicle-core" }
-chronicle-bus = { path = "crates/chronicle-bus" }
+chronicle-core = { path = "crates/1-primitives/chronicle-core" }
+chronicle-bus = { path = "crates/2-infra/chronicle-bus" }
 ```
 
 ---

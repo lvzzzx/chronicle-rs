@@ -22,7 +22,7 @@ None yet.
 
 ## Decision Log
 
-- Decision: Implement `chronicle-cli` as a new workspace crate under `crates/chronicle-cli` with a binary name of `chron-cli`.
+- Decision: Implement `chronicle-cli` as a new workspace crate under `crates/4-app/chronicle-cli` with a binary name of `chron-cli`.
   Rationale: Keeps tooling colocated with the rest of the workspace while matching the DESIGN.md command name.
   Date/Author: 2026-01-17, Codex
 - Decision: Use `clap` for argument parsing rather than handwritten `std::env::args`.
@@ -38,21 +38,21 @@ Implemented a new `chronicle-cli` crate that provides inspect, tail, doctor, and
 
 ## Context and Orientation
 
-The queue on-disk format lives in `crates/chronicle-core`. A queue directory contains `control.meta` (writer position and segment size), `index.meta` (last flushed segment/offset), `writer.lock` (lock owner identity), `readers/<name>.meta` files (reader positions + heartbeat), and one or more segment files named `000000000.q`, `000000001.q`, etc. Segment headers and message headers are defined in `crates/chronicle-core/src/segment.rs` and `crates/chronicle-core/src/header.rs`. Reader metadata is loaded via `load_reader_meta` in `crates/chronicle-core/src/segment.rs`. Writer lock metadata is currently handled in `crates/chronicle-core/src/writer_lock.rs` but not exposed publicly, so CLI support will require either public helpers or mirrored parsing logic in the CLI.
+The queue on-disk format lives in `crates/1-primitives/chronicle-core`. A queue directory contains `control.meta` (writer position and segment size), `index.meta` (last flushed segment/offset), `writer.lock` (lock owner identity), `readers/<name>.meta` files (reader positions + heartbeat), and one or more segment files named `000000000.q`, `000000001.q`, etc. Segment headers and message headers are defined in `crates/1-primitives/chronicle-core/src/segment.rs` and `crates/1-primitives/chronicle-core/src/header.rs`. Reader metadata is loaded via `load_reader_meta` in `crates/1-primitives/chronicle-core/src/segment.rs`. Writer lock metadata is currently handled in `crates/1-primitives/chronicle-core/src/writer_lock.rs` but not exposed publicly, so CLI support will require either public helpers or mirrored parsing logic in the CLI.
 
-The bus layout helpers live in `crates/chronicle-bus/src/layout.rs` and describe the `orders/queue/<strategy>/orders_out` and `orders/queue/<strategy>/orders_in` directories. The `doctor` subcommand will traverse a bus root and find queue directories by locating `control.meta` files rather than relying on a single fixed layout.
+The bus layout helpers live in `crates/2-infra/chronicle-bus/src/layout.rs` and describe the `orders/queue/<strategy>/orders_out` and `orders/queue/<strategy>/orders_in` directories. The `doctor` subcommand will traverse a bus root and find queue directories by locating `control.meta` files rather than relying on a single fixed layout.
 
 There is no existing CLI crate, so this phase must add a new workspace member and a new binary crate.
 
 ## Plan of Work
 
-Introduce a new crate at `crates/chronicle-cli` with a binary entrypoint named `chron-cli`. Wire it into the workspace in the root `Cargo.toml`. Implement a `main.rs` that uses `clap` to parse subcommands. The CLI will depend on `chronicle-core` (always) and optionally `chronicle-bus` (for consistent path handling when helpful). Keep all output plain text with stable key=value fields so it can be parsed by scripts if needed.
+Introduce a new crate at `crates/4-app/chronicle-cli` with a binary entrypoint named `chron-cli`. Wire it into the workspace in the root `Cargo.toml`. Implement a `main.rs` that uses `clap` to parse subcommands. The CLI will depend on `chronicle-core` (always) and optionally `chronicle-bus` (for consistent path handling when helpful). Keep all output plain text with stable key=value fields so it can be parsed by scripts if needed.
 
-For `inspect <queue_path>`, open the control file with `ControlFile::open` and `wait_ready()`, then read the seqlock-protected segment index (`segment_index`), segment size, writer epoch, and heartbeat. Read `index.meta` if present to show last flushed segment/offset. Enumerate reader metadata files under `<queue_path>/readers`, call `load_reader_meta` for each, and compute lag in bytes and segments relative to the head position (head = current_segment * segment_size + write_offset). For process liveness, expose a small public helper in `crates/chronicle-core/src/writer_lock.rs` that reads and reports the lock record (`pid`, `start_time`, `writer_epoch`) and checks `/proc/<pid>/stat` to determine if the owner is alive on Linux. Mark the lock as stale if the record exists but the owner is not alive.
+For `inspect <queue_path>`, open the control file with `ControlFile::open` and `wait_ready()`, then read the seqlock-protected segment index (`segment_index`), segment size, writer epoch, and heartbeat. Read `index.meta` if present to show last flushed segment/offset. Enumerate reader metadata files under `<queue_path>/readers`, call `load_reader_meta` for each, and compute lag in bytes and segments relative to the head position (head = current_segment * segment_size + write_offset). For process liveness, expose a small public helper in `crates/1-primitives/chronicle-core/src/writer_lock.rs` that reads and reports the lock record (`pid`, `start_time`, `writer_epoch`) and checks `/proc/<pid>/stat` to determine if the owner is alive on Linux. Mark the lock as stale if the record exists but the owner is not alive.
 
 For `tail <queue_path> [-f] [--reader <name>] [--limit <n>]`, open a `QueueReader` using a default reader name like `cli_tail_<pid>` (overrideable by `--reader`). Drain messages using `next()`. For each message, print a header line with `seq`, `timestamp_ns`, `type_id`, and `payload_len`, followed by a hex dump of the payload (16 bytes per line, offset-prefixed). If `-f` is set, call `wait(None)` when no message is available and continue; otherwise exit when the queue is caught up or `--limit` messages have been printed. Call `commit()` periodically so the reader metadata advances (for example after each message).
 
-For `doctor <bus_root>`, recursively scan the directory tree for folders that contain `control.meta` files and treat each as a queue root. For each queue root, run the same lock check as `inspect` and report stale locks. Compute retention candidates by calling a new helper in `crates/chronicle-core/src/retention.rs` that returns the list of segment IDs eligible for deletion without deleting them. This helper should be a pure read-only variant of `cleanup_segments`, using `min_live_reader_segment` and a scan of segment filenames to return candidates. Print results in a grouped format per queue root, including counts and the range of candidate segment IDs.
+For `doctor <bus_root>`, recursively scan the directory tree for folders that contain `control.meta` files and treat each as a queue root. For each queue root, run the same lock check as `inspect` and report stale locks. Compute retention candidates by calling a new helper in `crates/1-primitives/chronicle-core/src/retention.rs` that returns the list of segment IDs eligible for deletion without deleting them. This helper should be a pure read-only variant of `cleanup_segments`, using `min_live_reader_segment` and a scan of segment filenames to return candidates. Print results in a grouped format per queue root, including counts and the range of candidate segment IDs.
 
 For `bench`, implement a local write/read microbenchmark. The command should create a queue under a user-provided path (`--queue-path`) or a unique directory under the system temp directory. Write N messages (default 100_000) of a fixed payload size (default 256 bytes) using `Queue::open_publisher`. Record the elapsed time and print throughput (messages/sec and MB/sec). If `--read` is specified, open a reader and drain all messages to measure end-to-end throughput. If `--keep` is not set, delete the benchmark directory on completion so it does not pollute the filesystem.
 
@@ -64,22 +64,22 @@ Work from the repo root.
 
 1) Add the new crate and workspace wiring.
 
-    - Create `crates/chronicle-cli/Cargo.toml` with dependencies on `chronicle-core` and `clap`.
-    - Create `crates/chronicle-cli/src/main.rs`.
-    - Add `crates/chronicle-cli` to the workspace `Cargo.toml` members list.
+    - Create `crates/4-app/chronicle-cli/Cargo.toml` with dependencies on `chronicle-core` and `clap`.
+    - Create `crates/4-app/chronicle-cli/src/main.rs`.
+    - Add `crates/4-app/chronicle-cli` to the workspace `Cargo.toml` members list.
 
 2) Add public lock/retention helpers in core for CLI use.
 
-    - In `crates/chronicle-core/src/writer_lock.rs`, add a public `WriterLockInfo` struct and public functions:
+    - In `crates/1-primitives/chronicle-core/src/writer_lock.rs`, add a public `WriterLockInfo` struct and public functions:
         - `pub fn read_lock_info(path: &Path) -> Result<Option<WriterLockInfo>>`
         - `pub fn lock_owner_alive(info: &WriterLockInfo) -> Result<bool>` (Linux) or a simple `true` on non-Linux.
-    - In `crates/chronicle-core/src/retention.rs`, add:
+    - In `crates/1-primitives/chronicle-core/src/retention.rs`, add:
         - `pub fn retention_candidates(root: &Path, head_segment: u64, head_offset: u64, segment_size: u64) -> Result<Vec<u64>>`
       Implement it by copying the scan logic from `cleanup_segments` but without deletions.
 
 3) Implement CLI subcommands.
 
-    - In `crates/chronicle-cli/src/main.rs`, define the CLI struct with `clap` subcommands: `inspect`, `tail`, `doctor`, `bench`.
+    - In `crates/4-app/chronicle-cli/src/main.rs`, define the CLI struct with `clap` subcommands: `inspect`, `tail`, `doctor`, `bench`.
     - Implement `inspect` by reading control/index/readers and printing a summary.
     - Implement `tail` by streaming messages using `Queue::open_subscriber` with a unique reader name.
     - Implement `doctor` by scanning for queue roots and printing stale locks and retention candidates.
@@ -155,14 +155,14 @@ Validation sample (from 2026-01-17):
 
 ## Interfaces and Dependencies
 
-Use `clap` for CLI parsing (version 4.x). Add these dependencies in `crates/chronicle-cli/Cargo.toml`:
+Use `clap` for CLI parsing (version 4.x). Add these dependencies in `crates/4-app/chronicle-cli/Cargo.toml`:
 
     [dependencies]
     clap = { version = "4", features = ["derive"] }
     chronicle-core = { path = "../chronicle-core" }
     chronicle-bus = { path = "../chronicle-bus" }
 
-In `crates/chronicle-core/src/writer_lock.rs`, define:
+In `crates/1-primitives/chronicle-core/src/writer_lock.rs`, define:
 
     pub struct WriterLockInfo {
         pub pid: u32,
@@ -172,7 +172,7 @@ In `crates/chronicle-core/src/writer_lock.rs`, define:
 
     pub fn read_lock_info(path: &Path) -> Result<Option<WriterLockInfo>>
 
-In `crates/chronicle-core/src/retention.rs`, define:
+In `crates/1-primitives/chronicle-core/src/retention.rs`, define:
 
     pub fn retention_candidates(root: &Path, head_segment: u64, head_offset: u64, segment_size: u64) -> Result<Vec<u64>>
 

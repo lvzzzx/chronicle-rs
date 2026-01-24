@@ -11,9 +11,9 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Phase 4 (Event Notification) completed; ExecPlan in `execplans/phase-4-event-notification.md`.
 - Phase 5 (Segment Rolling & Retention) completed; ExecPlan in `execplans/phase-5-segment-rolling.md`.
 - Phase 6 (Multi-Queue Fan-In) completed; ExecPlan in `execplans/phase-6-multi-queue-fanin.md`.
-- Phase 7 (Queue Discovery) completed in `crates/chronicle-bus/` (scan + watch + dedup in `RouterDiscovery::poll()` with Linux inotify and periodic rescan fallback).
+- Phase 7 (Queue Discovery) completed in `crates/2-infra/chronicle-bus/` (scan + watch + dedup in `RouterDiscovery::poll()` with Linux inotify and periodic rescan fallback).
 - Phase 8 (Hardening & Benchmarks) completed; ExecPlan in `execplans/phase-8-hardening-benchmarks.md`.
-- Phase 9 (Docs, Examples & Operational Guidance) completed; examples in `crates/chronicle-bus/examples` and README quickstart added.
+- Phase 9 (Docs, Examples & Operational Guidance) completed; examples in `crates/2-infra/chronicle-bus/examples` and README quickstart added.
 - Phase 10 (CLI Tooling) completed; ExecPlan in `execplans/phase-10-cli-tooling.md`.
 - Phase 14 (Binance Market Feed) completed; ExecPlan in `execplans/phase-14-binance-feed.md`.
 
@@ -63,9 +63,9 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Deliverables:
   - Updated design docs and configuration guidance.
   - **End-to-end example** demonstrating DESIGN.md Section 12 topology:
-    - `crates/chronicle-bus/examples/feed.rs` — market data writer (single queue, multiple symbols)
-    - `crates/chronicle-bus/examples/strategy.rs` — reads market data, filters symbols, writes orders via `chronicle-bus` layout
-    - `crates/chronicle-bus/examples/router.rs` — uses `RouterDiscovery` to find strategies, fan-in merges orders
+    - `crates/2-infra/chronicle-bus/examples/feed.rs` — market data writer (single queue, multiple symbols)
+    - `crates/2-infra/chronicle-bus/examples/strategy.rs` — reads market data, filters symbols, writes orders via `chronicle-bus` layout
+    - `crates/2-infra/chronicle-bus/examples/router.rs` — uses `RouterDiscovery` to find strategies, fan-in merges orders
   - README with quickstart showing how to run the example processes.
 - Validation: example processes run concurrently, demonstrate queue creation, READY markers, discovery, and message flow.
 

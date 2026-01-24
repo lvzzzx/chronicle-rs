@@ -36,7 +36,7 @@ chronicle-cli monitor <QUEUE_PATH> [--interval <MS>]
 ## 4. Implementation Details
 
 ### 4.1. Dependencies
-Add to `crates/chronicle-cli/Cargo.toml`:
+Add to `crates/4-app/chronicle-cli/Cargo.toml`:
 *   `hdrhistogram`: For statistical accumulation.
 *   `ratatui`: For TUI rendering.
 *   `crossterm`: For terminal manipulation.
