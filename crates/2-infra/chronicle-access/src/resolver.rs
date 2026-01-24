@@ -79,7 +79,7 @@ impl StorageResolver {
         let candidates = [
             (StorageTier::Hot, self.hot_root.as_ref()),
             (StorageTier::Warm, self.warm_root.as_ref()),
-            (StorageTier::Warm, self.cold_root.as_ref()),
+            (StorageTier::Cold, self.cold_root.as_ref()),
         ];
 
         for (tier, root) in candidates {

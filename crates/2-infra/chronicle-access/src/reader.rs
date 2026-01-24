@@ -62,24 +62,30 @@ impl StorageReader {
     }
 
     pub fn next(&mut self) -> Result<Option<chronicle_core::MessageView<'_>>> {
-        let start = self.offset;
-        let Some((header, payload_len)) = self.read_header_at(start)? else {
-            return Ok(None);
-        };
+        loop {
+            let start = self.offset;
+            let Some((header, payload_len)) = self.read_header_at(start)? else {
+                return Ok(None);
+            };
 
-        self.payload_buf.resize(payload_len, 0);
-        self.source
-            .read_exact_at(start + HEADER_SIZE as u64, &mut self.payload_buf)?;
+            let aligned = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
+            self.offset = start.saturating_add(aligned as u64);
 
-        let aligned = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
-        self.offset = start.saturating_add(aligned as u64);
+            if header.type_id == PAD_TYPE_ID {
+                continue;
+            }
 
-        Ok(Some(chronicle_core::MessageView {
-            seq: header.seq,
-            timestamp_ns: header.timestamp_ns,
-            type_id: header.type_id,
-            payload: &self.payload_buf,
-        }))
+            self.payload_buf.resize(payload_len, 0);
+            self.source
+                .read_exact_at(start + HEADER_SIZE as u64, &mut self.payload_buf)?;
+
+            return Ok(Some(chronicle_core::MessageView {
+                seq: header.seq,
+                timestamp_ns: header.timestamp_ns,
+                type_id: header.type_id,
+                payload: &self.payload_buf,
+            }));
+        }
     }
 
     pub fn seek_timestamp(&mut self, target_ts_ns: u64) -> Result<bool> {
@@ -114,10 +120,7 @@ impl StorageReader {
         }
 
         let header = MessageHeader::from_bytes(&self.header_buf)?;
-        if header.type_id == PAD_TYPE_ID {
-            return Ok(None);
-        }
-
+        
         let end = offset
             .saturating_add(HEADER_SIZE as u64)
             .saturating_add(payload_len as u64);
@@ -345,7 +348,7 @@ fn path_from_remote_uri(uri: &str) -> Result<PathBuf> {
         return Ok(PathBuf::from(stripped));
     }
     if uri.contains("://") {
-        bail!("unsupported remote uri scheme: {uri}");
+        bail!("unsupported remote uri scheme: {uri} (only file:// or local paths are currently supported)");
     }
     Ok(PathBuf::from(uri))
 }
