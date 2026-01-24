@@ -4,7 +4,7 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use std::sync::Arc;
 
-use chronicle_replay::{BookEvent, L2Book};
+use crate::replay::{BookEvent, L2Book};
 
 #[derive(Debug, Clone)]
 pub struct ColumnSpec {

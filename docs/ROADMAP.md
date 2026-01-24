@@ -69,7 +69,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
   - README with quickstart showing how to run the example processes.
 - Validation: example processes run concurrently, demonstrate queue creation, READY markers, discovery, and message flow.
 
-### Phase 10 — CLI Tooling (chronicle-cli)
+### Phase 10 — CLI Tooling (chronicle-cli binary)
 - Deliverables: `chron-cli` binary with subcommands per DESIGN.md Section 14:
   - `inspect <queue_path>`: display writer position, reader lag, process liveness.
   - `tail <queue_path> [-f]`: stream message headers and payload hexdumps.
@@ -82,9 +82,9 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Rationale: DESIGN.md specifies `notify_seq` in `ControlBlock` with futex wake; current implementation uses eventfd. Alignment improves design/code consistency and may reduce syscall overhead.
 - Validation: readers use hybrid spin + futex; writer increments `notify_seq` and calls `futex_wake`; existing tests pass.
 
-### Phase 14 — Binance Market Feed Adapter (chronicle-feed-binance)
+### Phase 14 — Binance Market Feed Adapter (chronicle-feed-binance binary)
 - Deliverables:
-  - Standalone crate `chronicle-feed-binance`.
+  - Binary `chronicle-feed-binance` (in the `chronicle` crate).
   - WebSocket connection to Binance Spot API via `tokio-tungstenite`.
   - Normalized `BookTicker` binary format for zero-copy reading.
   - Integration with `chronicle::core` for persistence.

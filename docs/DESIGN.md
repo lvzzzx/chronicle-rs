@@ -21,7 +21,7 @@ Non-goals (MVP):
 
 To keep the low-latency core deterministic and stable, the design is explicitly split:
 
-2.1 Data plane: chronicle-core (the queue engine)
+2.1 Data plane: chronicle::core (the queue engine)
 
 Responsibilities:
 	•	On-disk format (segments, headers), record alignment
@@ -35,7 +35,7 @@ Non-responsibilities:
 	•	Process lifecycle, orchestration, or deployment
 	•	Dynamic strategy discovery policies (beyond primitives)
 
-2.2 Control plane helper: chronicle-bus (thin glue, not a platform)
+2.2 Control plane helper: chronicle::bus (thin glue, not a platform)
 
 Responsibilities:
 	•	Standard directory layout and endpoint naming
@@ -48,7 +48,7 @@ Non-responsibilities:
 	•	Central service registry
 	•	Admission control, scheduling, or quotas
 
-Guiding principle: chronicle-bus must remain a small utility layer. Anything that smells like orchestration stays outside.
+Guiding principle: chronicle::bus must remain a small utility layer. Anything that smells like orchestration stays outside.
 
 2.3 Passive Discovery & Service Resilience (Scope Split)
 
@@ -71,11 +71,11 @@ What the trading system provides (policy):
     - Retry cadence, backoff, and escalation logic.
 
 Suggested module split and APIs:
-    - chronicle-core (signals only):
+    - chronicle::core (signals only):
         - QueueReader::writer_status(ttl) -> WriterStatus
         - QueueReader::detect_disconnect(ttl) -> Option<DisconnectReason>
         - DisconnectReason enum (lock lost, heartbeat stale, segment missing)
-    - chronicle-bus (optional helper, cold path):
+    - chronicle::bus (optional helper, cold path):
         - SubscriberDiscovery helper that polls readiness + attempts open
         - Emits SubscriberEvent::{Connected(QueueReader), Disconnected(DisconnectReason), Waiting}
         - Does not perform safety actions or block the hot path
@@ -108,7 +108,7 @@ To achieve ultra-low latency, we employ a "Signal Suppression" strategy using a 
 *   **Sleep Path:** Writer only syscalls (`futex_wake`) if `waiters_pending > 0`.
 *   See **[DESIGN-latency.md](./DESIGN-latency.md)** for the formal proof of correctness and implementation details.
 
-### 3.3 Control Plane (chronicle-bus)
+### 3.3 Control Plane (chronicle::bus)
 
 ⸻
 
@@ -534,7 +534,7 @@ Operational guidance:
 
 11. API Design
 
-11.1 chronicle-core API (data plane)
+11.1 chronicle::core API (data plane)
 
 pub struct Queue;
 
@@ -591,11 +591,11 @@ impl QueueReader {
 	•	Io: underlying OS or filesystem error (open/mmap/fallocate/msync/fdatasync).
 	•	Errors are fail-fast; callers decide retry/backoff/drop policy.
 
-11.2 chronicle-bus API (control plane helper; intentionally thin)
+11.2 chronicle::bus API (control plane helper; intentionally thin)
 
 11.2.1 Layout and endpoints
 The IPC layout is standardized by `chronicle::layout`. Control-plane helpers
-(READY/LEASE) live in `chronicle-bus`.
+(READY/LEASE) live in `chronicle::bus`.
 
 pub struct IpcLayout {
     root: std::path::PathBuf, // e.g. /var/lib/hft_bus
@@ -785,7 +785,7 @@ The system employs a hybrid discovery model: **Static** for critical infrastruct
 
 12.7 Process Architecture & Management
 
-The system is strictly **Multi-Process**. Each component (Feed, Strategy, Router) runs in its own OS process to ensure performance isolation and crash resilience. IPC is handled exclusively via `chronicle-core` queues (shared memory).
+The system is strictly **Multi-Process**. Each component (Feed, Strategy, Router) runs in its own OS process to ensure performance isolation and crash resilience. IPC is handled exclusively via `chronicle::core` queues (shared memory).
 
 **Process Management:**
 Since `chronicle-rs` does not handle supervision (Section 1 "Non-goals"), external tools must be used.

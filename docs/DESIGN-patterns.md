@@ -240,7 +240,7 @@ Consumers (Readers) do not assume Producers (Writers) exist at startup. Instead,
 
 ### Scope Split: What Lives Here vs. In Trading Systems
 
-We intentionally split **primitives** (in `chronicle-core` / `chronicle-bus`) from **policy** (in the trading system). This keeps the message framework ULL-safe and reusable across many strategies.
+We intentionally split **primitives** (in `chronicle::core` / `chronicle::bus`) from **policy** (in the trading system). This keeps the message framework ULL-safe and reusable across many strategies.
 
 **Why this split:**
 
@@ -263,13 +263,13 @@ We intentionally split **primitives** (in `chronicle-core` / `chronicle-bus`) fr
 
 ### Suggested Module Split and APIs
 
-**`chronicle-core` (signals only):**
+**`chronicle::core` (signals only):**
 
 * `QueueReader::writer_status(ttl) -> WriterStatus`
 * `QueueReader::detect_disconnect(ttl) -> Option<DisconnectReason>`
 * `DisconnectReason` enum (e.g., lock lost, heartbeat stale, segment missing)
 
-**`chronicle-bus` (optional helper, cold path):**
+**`chronicle::bus` (optional helper, cold path):**
 
 * `SubscriberDiscovery` helper that polls directory readiness + attempts open.
 * Emits `SubscriberEvent::{Connected(QueueReader), Disconnected(DisconnectReason), Waiting}`

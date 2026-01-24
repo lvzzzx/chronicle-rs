@@ -1,7 +1,7 @@
-use chronicle::protocol::BookEventType;
-use chronicle_replay::BookEvent;
+use crate::protocol::BookEventType;
+use crate::replay::BookEvent;
 
-use crate::feature::Trigger;
+use super::feature::Trigger;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Timebase {

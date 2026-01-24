@@ -1,8 +1,8 @@
 use anyhow::Result;
-use chronicle_replay::{BookEventPayload, ReplayEngine};
+use crate::replay::{BookEventPayload, ReplayEngine};
 
-use crate::feature::{FeatureSet, RowBuffer, RowWriter};
-use crate::sink::RowSink;
+use super::feature::{FeatureSet, RowBuffer, RowWriter};
+use super::sink::RowSink;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ExtractorStats {

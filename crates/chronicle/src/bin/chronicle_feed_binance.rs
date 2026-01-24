@@ -4,7 +4,7 @@ use log::info;
 use std::path::PathBuf;
 
 use chronicle::core::Queue;
-use chronicle_feed_binance::binance;
+use chronicle::feed_binance::binance;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

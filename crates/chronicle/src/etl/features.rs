@@ -1,8 +1,8 @@
 use arrow::datatypes::DataType;
 
-use chronicle_replay::{BookEvent, L2Book};
+use crate::replay::{BookEvent, L2Book};
 
-use crate::feature::{ColumnSpec, Feature, RowWriter};
+use super::feature::{ColumnSpec, Feature, RowWriter};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GlobalTime;

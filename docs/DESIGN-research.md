@@ -261,12 +261,12 @@ Offset  Size  Field
 
 ```
 Record
-  [0x0000..0x003F]  MessageHeader (64 bytes, from chronicle-core)
+  [0x0000..0x003F]  MessageHeader (64 bytes, from chronicle::core)
   [0x0040..0x0077]  BookEventHeader (56 bytes, includes trailing pad)
   [0x0078..]        Payload (record_len - 56 bytes)
 ```
 
-MessageHeader (64 bytes, little-endian, from `chronicle-core`):
+MessageHeader (64 bytes, little-endian, from `chronicle::core`):
 
 ```
 Offset  Size  Field
@@ -280,7 +280,7 @@ Offset  Size  Field
 0x0020  32    pad
 ```
 
-**Note:** `type_id` should come from a shared enum in `chronicle-protocol` (e.g., `TypeId::BookEvent`) rather than ad-hoc values per writer. Reserve `PAD_TYPE_ID = 0xFFFF` for padding.
+**Note:** `type_id` should come from a shared enum in `chronicle::protocol` (e.g., `TypeId::BookEvent`) rather than ad-hoc values per writer. Reserve `PAD_TYPE_ID = 0xFFFF` for padding.
 
 BookEventHeader (56 bytes, little-endian, payload prefix):
 

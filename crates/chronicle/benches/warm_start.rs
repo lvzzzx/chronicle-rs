@@ -3,10 +3,10 @@ use chronicle::protocol::{
     book_flags, BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate,
     TypeId, PROTOCOL_VERSION,
 };
-use chronicle_replay::snapshot::{
+use chronicle::replay::snapshot::{
     SnapshotMetadata, SnapshotRetention, SnapshotWriter, SNAPSHOT_VERSION,
 };
-use chronicle_replay::ReplayEngine;
+use chronicle::replay::ReplayEngine;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::mem::size_of;
 

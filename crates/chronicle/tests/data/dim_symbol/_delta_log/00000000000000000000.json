@@ -1,0 +1,3 @@
+{"protocol": {"minReaderVersion": 1, "minWriterVersion": 2}}
+{"metaData": {"id": "test-table", "name": null, "description": null, "format": {"provider": "parquet", "options": {}}, "schemaString": "{}", "partitionColumns": [], "createdTime": 0, "configuration": {}}}
+{"add": {"path": "part-00000-test.parquet", "partitionValues": {}, "size": 4486, "modificationTime": 0, "dataChange": true}}

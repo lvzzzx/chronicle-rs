@@ -1,7 +1,7 @@
 use chronicle::core::Queue;
 use chronicle::protocol::{book_flags, BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId, PROTOCOL_VERSION};
-use chronicle_replay::snapshot::{SnapshotMetadata, SnapshotRetention, SnapshotWriter, SNAPSHOT_VERSION};
-use chronicle_replay::ReplayEngine;
+use chronicle::replay::snapshot::{SnapshotMetadata, SnapshotRetention, SnapshotWriter, SNAPSHOT_VERSION};
+use chronicle::replay::ReplayEngine;
 use std::mem::size_of;
 
 fn push_struct<T: Copy>(buf: &mut Vec<u8>, value: &T) {
@@ -141,7 +141,7 @@ fn warm_start_from_snapshot_replays_forward() -> anyhow::Result<()> {
 
     let update = engine.next()?.expect("expected diff event");
     match update {
-        chronicle_replay::ReplayUpdate::Applied { seq, event_type } => {
+        chronicle::replay::ReplayUpdate::Applied { seq, event_type } => {
             assert_eq!(seq, 2);
             assert_eq!(event_type, BookEventType::Diff);
         }

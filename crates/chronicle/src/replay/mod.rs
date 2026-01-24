@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
-use chronicle::core::Queue;
-use chronicle::core::{MessageView, QueueReader, ReaderConfig, WaitStrategy};
-use chronicle::protocol::{
+use crate::core::Queue;
+use crate::core::{MessageView, QueueReader, ReaderConfig, WaitStrategy};
+use crate::protocol::{
     BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId,
 };
 use std::collections::BTreeMap;

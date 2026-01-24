@@ -1,9 +1,5 @@
 [workspace]
 members = [
     "crates/chronicle",
-    "crates/3-engine/chronicle-replay",
-    "crates/4-app/chronicle-cli",
-    "crates/4-app/chronicle-etl",
-    "crates/4-app/chronicle-feed-binance",
 ]
 resolver = "2"

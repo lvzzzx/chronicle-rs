@@ -6,11 +6,11 @@ use std::time::{Duration, SystemTime};
 use anyhow::Result;
 use chronicle::core::{ReaderConfig, StartMode};
 use chronicle::protocol::{BookMode, L2Snapshot, PriceLevelUpdate};
-use chronicle_replay::snapshot::{
+use chronicle::replay::snapshot::{
     SnapshotMetadata, SnapshotPlanner, SnapshotPolicy, SnapshotRetention, SnapshotWriter,
     SNAPSHOT_VERSION,
 };
-use chronicle_replay::{ReplayEngine, ReplayUpdate};
+use chronicle::replay::{ReplayEngine, ReplayUpdate};
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -236,7 +236,7 @@ fn parse_duration_secs(value: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs(secs))
 }
 
-fn build_snapshot_payload(book: &chronicle_replay::L2Book) -> (L2Snapshot, Vec<u8>) {
+fn build_snapshot_payload(book: &chronicle::replay::L2Book) -> (L2Snapshot, Vec<u8>) {
     let (price_scale, size_scale) = book.scales();
     let bids: Vec<PriceLevelUpdate> = book
         .bids()

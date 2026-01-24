@@ -24,7 +24,7 @@ The system is divided into three distinct zones based on latency and data temper
     *   **Retention:** Short (e.g., 24-48 hours). Used for live trading and immediate replay.
 
 ### Zone 2: The Refinery (Warm / Near-Line)
-*   **Component:** `chronicle-etl` (Transformation Engine).
+*   **Component:** `chronicle::etl` (Transformation Engine).
 *   **Input:** Tails `/queues/raw_main.q`.
 *   **Operation:**
     1.  **Demultiplex:** Filters messages by Symbol and Type.
@@ -39,13 +39,13 @@ The system is divided into three distinct zones based on latency and data temper
     *   **Seekable:** Frequent snapshots allow fast random access.
 
 ### Zone 3: The Archive (Cold / Research)
-*   **Component:** `chronicle-storage` (Tiering Agent).
+*   **Component:** `chronicle::storage` (Tiering Agent).
 *   **Input:** Watches `/queues/clean/...` for Sealed Segments.
 *   **Operation:**
     *   **Migrate:** Moves sealed `.q` files from NVMe to HDD/S3/NFS.
     *   **Index:** Updates a `Manifest` for the `StorageReader` to locate files.
     *   **Compress:** (Optional) Transcodes `.q` to `.q.zst` if CPU allows, or relies on filesystem compression (ZFS/Btrfs).
-*   **Access:** Researchers mount the Archive and use `chronicle-core` to read files transparently.
+*   **Access:** Researchers mount the Archive and use `chronicle::core` to read files transparently.
 
 ---
 
@@ -85,7 +85,7 @@ graph TD
 4.  **End of Path:** The latency loop closes here.
 
 ### Scenario: "The ETL Pipeline" (Async)
-1.  **Wake:** `chronicle-etl` reader wakes up (approx 5-50µs later).
+1.  **Wake:** `chronicle::etl` reader wakes up (approx 5-50µs later).
 2.  **Process:** Reads Sequence 100. Updates internal `HashMap<Symbol, OrderBook>`.
 3.  **Check:** "Is it time for a Snapshot?" (e.g., `LastSnapshot + 60s < Now`).
     *   **Yes:** Serialize OrderBook -> Append Snapshot Msg -> Append Delta Msg.
@@ -109,7 +109,7 @@ graph TD
 *   **Logic:** Normalize Protocol -> Binary Struct -> Append.
 *   **No Filtering.**
 
-### B. `chronicle-etl` (New)
+### B. `chronicle::etl` (New)
 *   **Role:** The Smart Bridge.
 *   **Architecture:**
     *   **Single-Threaded Pipelining:** To maintain strict ordering.
@@ -118,7 +118,7 @@ graph TD
     *   Must handle `Gap Detection` and `Feed Recovery` gracefully.
     *   If Raw Stream gaps, ETL writes a `Gap` marker or resets the Snapshot.
 
-### C. `chronicle-storage` (Refactored)
+### C. `chronicle::storage` (Refactored)
 *   **Role:** Librarian.
 *   **Logic:**
     *   `TierManager`: Configurable policies (`Hot -> Warm` after 2h, `Warm -> Cold` after 7d).
@@ -130,15 +130,15 @@ graph TD
 ## 6. Implementation Plan
 
 1.  **Phase 1: The ETL Engine**
-    *   Build `chronicle-etl` binary.
+    *   Build `chronicle-etl` binary (in the `chronicle` crate).
     *   Implement `OrderBook` reconstruction logic (in-memory).
     *   Implement `Snapshot` injection policy.
 
 2.  **Phase 2: The Storage Tiering**
-    *   Refactor `chronicle-storage` to drop `ArchiveTap`.
+    *   Refactor `chronicle::storage` to drop `ArchiveTap`.
     *   Implement `TierManager` (background thread).
     *   Implement basic file-system based tiering (moving `.q` files).
 
 3.  **Phase 3: The Unified Reader**
-    *   Update `chronicle-core` Reader or create `chronicle-access` crate.
+    *   Update `chronicle::core` Reader or create `chronicle-access` crate.
     *   Implement `MultiSegmentReader` that spans tiers transparently.

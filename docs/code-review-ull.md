@@ -2,11 +2,11 @@
 
 **Date:** 2026-01-21
 **Reviewer:** Silas "Wire-Speed" Vance
-**Subject:** Latency Analysis of `chronicle-core` Indexing and `chronicle-feed-binance`
+**Subject:** Latency Analysis of `chronicle::core` Indexing and `chronicle::feed_binance`
 
 ## 1. Executive Summary
 
-The implementation of the Research Tier (replay, snapshots, indexing) is structurally sound and adheres to the "Log is Database" philosophy. The `chronicle-protocol` definitions provide the necessary ABI stability.
+The implementation of the Research Tier (replay, snapshots, indexing) is structurally sound and adheres to the "Log is Database" philosophy. The `chronicle::protocol` definitions provide the necessary ABI stability.
 
 However, the current implementation introduces **unbounded latencies** in the critical write path due to heap allocations. This violates the `ultra_low_latency` mandate for the core write path.
 
@@ -47,7 +47,7 @@ Since `segment_size` and `entry_stride` are known at creation time, we can calcu
 
 ### 2.2 Major: Intermediate Allocations in Feed Handler
 
-**Location:** `crates/4-app/chronicle-feed-binance/src/binance.rs`
+**Location:** `crates/chronicle/src/feed_binance/binance.rs`
 **Severity:** Medium (Throughput/GC pressure)
 
 The Binance feed handler allocates intermediate vectors for Bids and Asks before writing them to the queue.
@@ -76,7 +76,7 @@ For a high-throughput feed (e.g., Binance Futures during volatility), this creat
 
 ### 2.3 Minor: Timestamp Precision in Replay
 
-**Location:** `crates/3-engine/chronicle-replay/src/lib.rs`
+**Location:** `crates/chronicle/src/replay/mod.rs`
 
 The replay engine uses `SystemTime` for wall-clock benchmarks. Ensure that in production replay, we strictly use `ingest_ts_ns` from the record header to simulate "time passing," rather than checking the CPU clock.
 

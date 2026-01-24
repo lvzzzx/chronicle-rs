@@ -469,73 +469,31 @@ name = "chronicle"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
- "crc32fast",
- "criterion",
- "libc",
- "memmap2",
- "quanta",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "zstd",
-]
-
-[[package]]
-name = "chronicle-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chronicle",
- "clap",
- "crossterm 0.29.0",
- "hdrhistogram",
- "ratatui",
-]
-
-[[package]]
-name = "chronicle-etl"
-version = "0.1.0"
-dependencies = [
- "anyhow",
  "arrow",
- "chronicle",
- "chronicle-replay",
- "clap",
- "parquet",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "chronicle-feed-binance"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chronicle",
  "clap",
  "core_affinity",
+ "crc32fast",
+ "criterion",
+ "crossterm 0.29.0",
  "env_logger",
  "futures-util",
+ "hdrhistogram",
+ "libc",
  "log",
+ "memmap2",
+ "parquet",
+ "quanta",
+ "ratatui",
  "reqwest",
  "serde",
  "serde_json",
  "simd-json",
+ "tempfile",
+ "thiserror",
  "tokio",
  "tokio-tungstenite",
  "url",
-]
-
-[[package]]
-name = "chronicle-replay"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chronicle",
- "criterion",
- "tempfile",
+ "zstd",
 ]
 
 [[package]]

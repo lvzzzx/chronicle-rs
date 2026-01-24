@@ -22,15 +22,11 @@ chronicle-rs/
     │   └── storage             # Tiered storage access (Live vs Archive)
     │
     ├── 3-engine/               # Logic Processors (The "Brains")
-    │   ├── chronicle-replay    # (Existing) Event reconstruction, Ordering, Snapshots
     │   └── chronicle-sim       # (NEW) Matching Engine Simulator, Latency models, PnL accounting
     │
     └── 4-app/                  # Application SDKs (The "User Interface")
         ├── chronicle-api       # (NEW) Shared Traits (Context, Strategy) defining the contract
-        ├── chronicle-framework # (NEW) Live Runtime (Pinning, Signals, Busy-Loops)
-        ├── chronicle-cli       # (Existing) CLI tooling and diagnostics
-        ├── chronicle-feed-binance # (Existing) Exchange feed adapter
-        └── chronicle-etl       # (Existing) Batch processing & feature extraction
+        └── chronicle-framework # (NEW) Live Runtime (Pinning, Signals, Busy-Loops)
 ```
 
 ### 2.1 Dependency Rules
@@ -69,7 +65,7 @@ chronicle-rs/
 
 ### Layer 3: Engine (The "Simulation")
 
-*   **`chronicle-replay`**
+*   **`chronicle::replay`**
     *   **Role:** The iterator that reconstructs the "World State" (L2/L3 Books) from a log stream.
     *   **Key Features:** Deterministic ordering, warm-start from snapshots.
 
@@ -95,13 +91,13 @@ chronicle-rs/
         *   **Lifecycle:** Initialization, Heartbeats, Signal Handling (SIGTERM).
         *   **Wait Strategy:** Busy-spin with eventfd wakeups; futex is a future optimization.
 
-*   **`chronicle-etl`**
+*   **`chronicle::etl`**
     *   **Role:** Batch processing framework for generating training data (Parquet/Arrow).
 
-*   **`chronicle-cli`**
+*   **`chronicle-cli`** (binary in the `chronicle` crate)
     *   **Role:** Operational CLI for inspecting queues and diagnosing bus health.
 
-*   **`chronicle-feed-binance`**
+*   **`chronicle-feed-binance`** (binary in the `chronicle` crate)
     *   **Role:** Live market data ingestion adapter for Binance feeds.
 
 ---

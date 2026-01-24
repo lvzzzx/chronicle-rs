@@ -10,8 +10,7 @@ use chronicle::core::control::ControlFile;
 use chronicle::core::retention::retention_candidates;
 use chronicle::core::segment::{load_index, load_reader_meta, validate_segment_size};
 use chronicle::core::{lock_owner_alive, read_lock_info, Queue, WriterLockInfo};
-
-mod monitor;
+use chronicle::cli::monitor;
 
 #[derive(Parser)]
 #[command(name = "chron-cli", version, about = "Chronicle queue tooling")]

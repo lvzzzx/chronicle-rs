@@ -10,14 +10,28 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1"
+arrow = "57.2.0"
 clap = { version = "4.5.54", features = ["derive"] }
+core_affinity = "0.8"
 crc32fast = "1"
+crossterm = "0.29.0"
+env_logger = "0.10"
+futures-util = "0.3"
+hdrhistogram = "7.5.4"
 libc = "0.2"
+log = "0.4"
 memmap2 = "0.9"
+parquet = { version = "57.2.0", features = ["arrow"] }
 quanta = "0.12.6"
+ratatui = "0.26.0"
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+simd-json = "0.13"
 thiserror = "1"
+tokio = { version = "1.28", features = ["full"] }
+tokio-tungstenite = { version = "0.20", features = ["rustls-tls-native-roots"] }
+url = "2.4"
 zstd = "0.13"
 
 [dev-dependencies]
@@ -55,3 +69,23 @@ harness = false
 [[bench]]
 name = "seek"
 harness = false
+
+[[bin]]
+name = "chronicle-cli"
+path = "src/bin/chronicle_cli.rs"
+
+[[bin]]
+name = "chronicle-etl"
+path = "src/bin/chronicle_etl.rs"
+
+[[bin]]
+name = "chronicle-feed-binance"
+path = "src/bin/chronicle_feed_binance.rs"
+
+[[bin]]
+name = "snapshotter"
+path = "src/bin/snapshotter.rs"
+
+[[bin]]
+name = "tier"
+path = "src/bin/tier.rs"

@@ -24,7 +24,7 @@
 
 **Optional Variables:**
 - `{{constraints}}`: Hardware or software limits (e.g., "Single core", "No allocations", "10ms max recovery").
-- `{{context}}`: Existing system context (e.g., "Connects to `chronicle-bus` via shm").
+- `{{context}}`: Existing system context (e.g., "Connects to `chronicle::bus` via shm").
 
 **Example Values:**
 ```
