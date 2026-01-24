@@ -14,7 +14,7 @@ However, the current implementation introduces **unbounded latencies** in the cr
 
 ### 2.1 Critical: Dynamic Allocation in `SeekIndexBuilder` (Hot Path)
 
-**Location:** `crates/1-primitives/chronicle-core/src/seek_index.rs`
+**Location:** `crates/chronicle/src/core/seek_index.rs`
 **Severity:** High (Latency Jitter)
 
 The `SeekIndexBuilder` maintains an in-memory `Vec<SeekIndexEntry>` that grows as records are appended.

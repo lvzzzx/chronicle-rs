@@ -1,5 +1,5 @@
-use chronicle_core::Queue;
-use chronicle_protocol::{book_flags, BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId, PROTOCOL_VERSION};
+use chronicle::core::Queue;
+use chronicle::protocol::{book_flags, BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId, PROTOCOL_VERSION};
 use chronicle_replay::snapshot::{SnapshotMetadata, SnapshotRetention, SnapshotWriter, SNAPSHOT_VERSION};
 use chronicle_replay::ReplayEngine;
 use std::mem::size_of;

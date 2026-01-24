@@ -1,173 +1,144 @@
-# Feature Extraction Pipeline Architecture (The Silas Standard)
+# Unified Storage & ETL Architecture
 
-## 1. Objective: High-Throughput ETL
+## 1. The Philosophy
 
-This document defines the architecture for the **Chronicle Feature Extractor**, a high-performance pipeline designed to transform raw L3/L2 market logs into structured datasets (Parquet/Arrow) for machine learning training.
+1.  **Latency First (Production):** The Hot Path must never pay the cost of organization. Data is written exactly as it arrives (Multiplexed, Raw).
+2.  **Usability Second (Research):** Research efficiency comes from Structure (Demultiplexed, Clean). We bridge this gap with an asynchronous, near-line transformation layer.
+3.  **Storage is Stream:** There is no separate "Database." The Archive is simply the set of Sealed Segments from the Clean Streams. Access is unified via the Chronicle API.
+4.  **Synthetic State:** Snapshots are expensive. We offload their generation to the ETL layer, keeping the Hot Path lightweight while ensuring the Archive is seek-friendly.
 
-**Philosophy:**
-- **Batch over Event:** Unlike backtesting (event-driven), extraction is throughput-driven.
-- **Zero-Copy to Column:** Compute features in registers and write directly to Arrow buffers.
-- **GIL-Free:** Python configures the job; Rust executes the loop.
-- **Event-Time Only:** All temporal logic is derived from message timestamps (`ingest_ts` / `exchange_ts`), never the system clock.
+---
 
-## 2. Pipeline Architecture
+## 2. The Topology
 
-The pipeline consists of three stages executed in a tight loop:
-1.  **Ingest:** Zero-copy read from Chronicle Queue (`.q` files).
-2.  **Reconstruct:** deterministic L3/L2 book updates.
-3.  **Compute & Emit:** Calculate features and append to columnar buffers.
+The system is divided into three distinct zones based on latency and data temperature.
 
-**Integrity guardrails (must pass):**
-- **Sequence continuity:** enforce strict ordering (no gaps) using `MessageHeader.seq` and/or `BookEventHeader.native_seq`.
-- **Schema compatibility:** validate `schema_version` and `book_mode` before applying an event.
+### Zone 1: The Firehose (Hot / Critical Path)
+*   **Component:** `chronicle-feed` (Feed Handler).
+*   **Medium:** `/dev/shm` (Ramdisk) or `/mnt/nvme-hot`.
+*   **Stream:** `/queues/raw_main.q`
+*   **Characteristics:**
+    *   **Multiplexed:** All symbols, all message types (Book, Trade, System).
+    *   **Raw:** Minimal parsing/normalization.
+    *   **Sparse Snapshots:** Only writes snapshots on process start or feed reconnect.
+    *   **Retention:** Short (e.g., 24-48 hours). Used for live trading and immediate replay.
+
+### Zone 2: The Refinery (Warm / Near-Line)
+*   **Component:** `chronicle-etl` (Transformation Engine).
+*   **Input:** Tails `/queues/raw_main.q`.
+*   **Operation:**
+    1.  **Demultiplex:** Filters messages by Symbol and Type.
+    2.  **State Reconstruction:** Maintains internal Order Book state for all symbols.
+    3.  **Snapshot Injection:** Periodically (e.g., every 60s) serializes internal state as a `Snapshot` message into the output stream.
+*   **Output:** Writes to Structured Queues:
+    *   `/queues/clean/btc_usdt/book.q`
+    *   `/queues/clean/btc_usdt/trade.q`
+    *   `/queues/clean/eth_usdt/book.q`
+*   **Characteristics:**
+    *   **Latency:** Milliseconds behind Live.
+    *   **Seekable:** Frequent snapshots allow fast random access.
+
+### Zone 3: The Archive (Cold / Research)
+*   **Component:** `chronicle-storage` (Tiering Agent).
+*   **Input:** Watches `/queues/clean/...` for Sealed Segments.
+*   **Operation:**
+    *   **Migrate:** Moves sealed `.q` files from NVMe to HDD/S3/NFS.
+    *   **Index:** Updates a `Manifest` for the `StorageReader` to locate files.
+    *   **Compress:** (Optional) Transcodes `.q` to `.q.zst` if CPU allows, or relies on filesystem compression (ZFS/Btrfs).
+*   **Access:** Researchers mount the Archive and use `chronicle-core` to read files transparently.
+
+---
+
+## 3. The Data Flow
 
 ```mermaid
-graph LR
-    Log[Chronicle Log] -->|mmap| Reader[QueueReader]
-    Reader -->|Event| Book[L3 OrderBook]
-    Book -->|State| Extractor[FeatureSet]
-    Reader -->|Event| Extractor
-    Extractor -->|Row| Arrow[Arrow Builder]
-    Arrow -->|Batch| Parquet[Parquet Writer]
-```
-
-## 3. Rust API: The `FeatureSet` Trait
-
-The core of the system is the `FeatureSet` trait. It defines the schema and the transformation logic.
-
-### 3.1 Trait Definition
-
-```rust
-pub trait FeatureSet {
-    /// Define the output schema (Column Names and Types)
-    fn schema(&self) -> Schema;
-
-    /// Called on every market event to keep feature state consistent.
-    /// - `book`: The current state of the Order Book (post-update).
-    /// - `event`: The event that triggered the update (Add/Cancel/Trade).
-    /// - `out`: The row buffer to write features into (only committed when `should_emit` is true).
-    fn calculate(&mut self, book: &L3OrderBook, event: &BookEvent, out: &mut RowBuffer);
+graph TD
+    NET[Network / FPGA] -->|UDP Multicast| FEED[Feed Handler]
     
-    /// Optional: Filter events to emit. (e.g., only emit on Trades or Time Bars)
-    fn should_emit(&self, event: &BookEvent) -> bool {
-        true // Default: emit every tick
-    }
-}
+    subgraph "Zone 1: Hot Path"
+        FEED -->|Append| RAW[raw_main.q]
+        STRAT[HFT Strategy] -->|Read| RAW
+    end
+
+    subgraph "Zone 2: Refinery"
+        ETL[ETL Service] -->|Tail| RAW
+        ETL -->|Demux & Snapshot| CLEAN_BTC[clean/btc_usdt.q]
+        ETL -->|Demux & Snapshot| CLEAN_ETH[clean/eth_usdt.q]
+    end
+
+    subgraph "Zone 3: Storage"
+        TIER[Tiering Agent] -->|Watch| CLEAN_BTC
+        TIER -->|Move| ARCHIVE[HDD / Archive]
+    end
+
+    RESEARCH[Researcher] -->|Read| ARCHIVE
 ```
 
-### 3.2 Example: Order Flow Imbalance (OFI)
+---
 
-```rust
-pub struct OfiExtractor {
-    prev_bid: f64,
-    prev_ask: f64,
-    prev_bid_sz: f64,
-    prev_ask_sz: f64,
-}
+## 4. The Critical Path Analysis
 
-impl FeatureSet for OfiExtractor {
-    fn calculate(&mut self, book: &L3OrderBook, event: &BookEvent, out: &mut RowBuffer) {
-        let bid = book.best_bid_price();
-        let ask = book.best_ask_price();
-        let bid_sz = book.best_bid_size();
-        let ask_sz = book.best_ask_size();
+### Scenario: "Live Trading"
+1.  **Packet In:** Feed Handler receives UDP packet (Sequence 100).
+2.  **Write:** Appends to `raw_main.q`. Atomic Commit. **Latency: < 1µs.**
+3.  **Reaction:** HFT Strategy sees update. Fires order.
+4.  **End of Path:** The latency loop closes here.
 
-        // Calculate OFI components (e_n)
-        let e_bid = if bid > self.prev_bid {
-            bid_sz
-        } else if bid < self.prev_bid {
-            -self.prev_bid_sz
-        } else {
-            bid_sz - self.prev_bid_sz
-        };
-        
-        let e_ask = if ask < self.prev_ask {
-            ask_sz
-        } else if ask > self.prev_ask {
-            -self.prev_ask_sz
-        } else {
-            ask_sz - self.prev_ask_sz
-        };
+### Scenario: "The ETL Pipeline" (Async)
+1.  **Wake:** `chronicle-etl` reader wakes up (approx 5-50µs later).
+2.  **Process:** Reads Sequence 100. Updates internal `HashMap<Symbol, OrderBook>`.
+3.  **Check:** "Is it time for a Snapshot?" (e.g., `LastSnapshot + 60s < Now`).
+    *   **Yes:** Serialize OrderBook -> Append Snapshot Msg -> Append Delta Msg.
+    *   **No:** Append Delta Msg.
+4.  **Write:** Appends to `clean/btc_usdt.q`.
 
-        let ofi = e_bid - e_ask;
+### Scenario: "Research Query"
+1.  **Request:** "Get BTC Order Book at 10:00:00."
+2.  **Locate:** `StorageReader` checks `clean/btc_usdt/index.meta` (or cached manifest).
+3.  **Seek:** Finds Segment `N`. Uses SeekIndex to jump to 10:00:00.
+4.  **Scan Back:** Finds nearest Snapshot (guaranteed within 60s by ETL).
+5.  **Reconstruct:** Loads Snapshot, replays Deltas to 10:00:00.
+6.  **Yield:** Returns Book State.
 
-        // Direct write to Arrow buffer (no intermediate allocation)
-        out.append_f64(0, ofi);
-        out.append_f64(1, (ask - bid) / ((ask + bid) / 2.0)); // Spread bps
+---
 
-        // Update state
-        self.prev_bid = bid;
-        self.prev_ask = ask;
-        self.prev_bid_sz = bid_sz;
-        self.prev_ask_sz = ask_sz;
-    }
-}
-```
+## 5. Component Specifications
 
-## 4. Python API: The Analyst Interface
+### A. `chronicle-feed` (Existing)
+*   **Role:** Dumb Pipe.
+*   **Logic:** Normalize Protocol -> Binary Struct -> Append.
+*   **No Filtering.**
 
-Researchers define the pipeline in Python, but execution happens in Rust.
+### B. `chronicle-etl` (New)
+*   **Role:** The Smart Bridge.
+*   **Architecture:**
+    *   **Single-Threaded Pipelining:** To maintain strict ordering.
+    *   **Sharded:** If throughput > Single Core, shard by Symbol Group (e.g., ETL-A handles BTC*, ETL-B handles ETH*).
+*   **State:**
+    *   Must handle `Gap Detection` and `Feed Recovery` gracefully.
+    *   If Raw Stream gaps, ETL writes a `Gap` marker or resets the Snapshot.
 
-### 4.1 Configuration
-We expose a library of optimized feature primitives.
+### C. `chronicle-storage` (Refactored)
+*   **Role:** Librarian.
+*   **Logic:**
+    *   `TierManager`: Configurable policies (`Hot -> Warm` after 2h, `Warm -> Cold` after 7d).
+    *   `Manifest`: JSON/SQLite index mapping `(Symbol, Date) -> [Segment Paths]`.
+    *   **Zero-Copy Move:** Uses `rename()` whenever possible to avoid data copy overhead during tiering.
 
-```python
-import chronicle_rs as ch
+---
 
-# Define the Feature Set
-# These map to pre-compiled Rust structs for maximum speed.
-config = ch.ExtractionConfig(
-    features=[
-        ch.features.GlobalTime(),            # ingest_ts, exchange_ts
-        ch.features.MidPrice(),
-        ch.features.BookImbalance(depth=5),  # (BidVol - AskVol) / Total
-        ch.features.OFI(decay=0.0),          # Raw OFI
-        ch.features.TradeFlow(),             # Aggressor volume
-    ],
-    # Filters control the output resolution (event-time, not wall-clock)
-    trigger=ch.triggers.TradeOrTime(sec=1.0, timebase="exchange_ts")
-)
-```
+## 6. Implementation Plan
 
-### 4.2 Execution (Batch Processing)
+1.  **Phase 1: The ETL Engine**
+    *   Build `chronicle-etl` binary.
+    *   Implement `OrderBook` reconstruction logic (in-memory).
+    *   Implement `Snapshot` injection policy.
 
-```python
-# Run extraction
-# This releases the GIL. Progress is reported via callbacks or TQDM.
-ch.extract_to_parquet(
-    source="/data/chronicle/binance_spot",
-    symbol="BTCUSDT",
-    destination="data/features/btc_20240120.parquet",
-    config=config,
-    compression="snappy"
-)
-```
+2.  **Phase 2: The Storage Tiering**
+    *   Refactor `chronicle-storage` to drop `ArchiveTap`.
+    *   Implement `TierManager` (background thread).
+    *   Implement basic file-system based tiering (moving `.q` files).
 
-## 5. Implementation Strategy
-
-### 5.1 The "RowBuffer" Abstraction
-To avoid allocating a `Vec<f64>` for every row, `RowBuffer` is a facade over a set of `arrow::array::PrimitiveBuilder`.
-- `out.append_f64(col_idx, value)` maps directly to `builders[col_idx].append_value(value)`.
-- When builders reach a batch size (e.g., 8192 rows), they are flushed to the Parquet writer.
-
-### 5.2 Single-Threaded Determinism
-L3/L2 reconstruction is strictly serial (causal), so the ETL loop is single-threaded per stream.
-- No cross-thread coordination in the hot path.
-- Parallelism, if any, is external to this design (separate processes/jobs per symbol).
-
-### 5.3 Warm Starts (Snapshots)
-The Extractor must support the same `Snapshot` mechanism as the Replay Engine.
-- If the job starts at `10:00`, it loads the `09:XX` snapshot, fast-forwards to `10:00`, and *then* begins emitting rows.
-- **Required metadata:** snapshot `seq_num`, `schema_version`, `endianness`, `book_mode`, and `exchange_ts_range`/`ingest_ts_range`.
-- **Validation:** reject snapshot if `seq_num` is not contiguous with the first event or if schema/endianness/book_mode mismatch.
-
-## 6. Performance Targets
-- **Throughput:** > 1,000,000 events/sec per core.
-- **Memory:** Zero allocation during the loop (except Arrow page buffers).
-- **Latency:** N/A (Throughput is king).
-
-## 7. Future: Online Features
-This same `FeatureSet` trait can be reused in the live strategy engine.
-- **Offline:** `FeatureSet` writes to Parquet.
-- **Online:** `FeatureSet` writes to a circular buffer for the Strategy model input.
-- **Guarantee:** Training data and Inference data are bit-identical (Code Reuse).
+3.  **Phase 3: The Unified Reader**
+    *   Update `chronicle-core` Reader or create `chronicle-access` crate.
+    *   Implement `MultiSegmentReader` that spans tiers transparently.

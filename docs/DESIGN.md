@@ -594,7 +594,7 @@ impl QueueReader {
 11.2 chronicle-bus API (control plane helper; intentionally thin)
 
 11.2.1 Layout and endpoints
-The IPC layout is standardized by `chronicle-layout`. Control-plane helpers
+The IPC layout is standardized by `chronicle::layout`. Control-plane helpers
 (READY/LEASE) live in `chronicle-bus`.
 
 pub struct IpcLayout {
@@ -814,24 +814,21 @@ See **[DESIGN-patterns.md](./DESIGN-patterns.md)** for implementation details.
 
 chronicle-rs/
 ├── crates/
-│   ├── chronicle-core/
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── control.rs
-│   │       ├── format.rs
-│   │       ├── segment.rs
-│   │       ├── writer.rs
-│   │       ├── reader.rs
-│   │       ├── retention.rs
-│   │       └── wait.rs
-│   └── chronicle-bus/
+│   └── chronicle/
 │       └── src/
 │           ├── lib.rs
-│           ├── layout.rs
-│           ├── ready.rs
-│           ├── lease.rs
-│           ├── discovery.rs
-│           └── registration.rs
+│           ├── core/
+│           │   ├── control.rs
+│           │   ├── header.rs
+│           │   ├── segment.rs
+│           │   ├── writer.rs
+│           │   ├── reader.rs
+│           │   ├── retention.rs
+│           │   └── wait.rs
+│           ├── protocol/
+│           ├── layout/
+│           ├── bus/
+│           └── storage/
 └── docs/
     └── DESIGN.md
 

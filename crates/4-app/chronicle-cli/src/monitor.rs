@@ -2,8 +2,8 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use chronicle_bus::{SubscriberConfig, SubscriberDiscovery, SubscriberEvent};
-use chronicle_core::{Clock, QuantaClock, QueueReader, StartMode};
+use chronicle::bus::{SubscriberConfig, SubscriberDiscovery, SubscriberEvent};
+use chronicle::core::{Clock, QuantaClock, QueueReader, StartMode};
 use clap::Args;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;

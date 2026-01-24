@@ -465,13 +465,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "chronicle-bus"
+name = "chronicle"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chronicle-core",
+ "clap",
+ "crc32fast",
+ "criterion",
+ "libc",
+ "memmap2",
+ "quanta",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
+ "zstd",
 ]
 
 [[package]]
@@ -479,24 +487,11 @@ name = "chronicle-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chronicle-bus",
- "chronicle-core",
+ "chronicle",
  "clap",
  "crossterm 0.29.0",
  "hdrhistogram",
  "ratatui",
-]
-
-[[package]]
-name = "chronicle-core"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "criterion",
- "libc",
- "memmap2",
- "quanta",
- "tempfile",
 ]
 
 [[package]]
@@ -505,8 +500,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow",
- "chronicle-core",
- "chronicle-protocol",
+ "chronicle",
  "chronicle-replay",
  "clap",
  "parquet",
@@ -519,8 +513,7 @@ name = "chronicle-feed-binance"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chronicle-core",
- "chronicle-protocol",
+ "chronicle",
  "clap",
  "core_affinity",
  "env_logger",
@@ -536,31 +529,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "chronicle-protocol"
-version = "0.1.0"
-
-[[package]]
 name = "chronicle-replay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chronicle-core",
- "chronicle-protocol",
+ "chronicle",
  "criterion",
  "tempfile",
-]
-
-[[package]]
-name = "chronicle-storage"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chronicle-core",
- "clap",
- "serde",
- "serde_json",
- "tempfile",
- "zstd",
 ]
 
 [[package]]

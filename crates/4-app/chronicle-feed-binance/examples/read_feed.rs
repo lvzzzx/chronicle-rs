@@ -1,5 +1,5 @@
-use chronicle_core::Queue;
-use chronicle_protocol::{BookTicker, TypeId};
+use chronicle::core::Queue;
+use chronicle::protocol::{BookTicker, TypeId};
 use clap::Parser;
 use std::path::PathBuf;
 use std::time::Duration;

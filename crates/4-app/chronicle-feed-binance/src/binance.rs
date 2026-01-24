@@ -11,7 +11,7 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
 use crate::market::{fxhash, market_id, Appendable};
-use chronicle_protocol::{
+use chronicle::protocol::{
     book_flags, BookEventHeader, BookEventType, BookMode, BookTicker, L2Diff, L2Snapshot,
     PriceLevelUpdate, Trade, TypeId, PROTOCOL_VERSION,
 };

@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
-use chronicle_core::control::ControlFile;
-use chronicle_core::retention::retention_candidates;
-use chronicle_core::segment::{load_index, load_reader_meta, validate_segment_size};
-use chronicle_core::{lock_owner_alive, read_lock_info, Queue, WriterLockInfo};
+use chronicle::core::control::ControlFile;
+use chronicle::core::retention::retention_candidates;
+use chronicle::core::segment::{load_index, load_reader_meta, validate_segment_size};
+use chronicle::core::{lock_owner_alive, read_lock_info, Queue, WriterLockInfo};
 
 mod monitor;
 

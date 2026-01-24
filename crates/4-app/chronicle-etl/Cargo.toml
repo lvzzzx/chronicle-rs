@@ -7,6 +7,8 @@ edition = "2021"
 anyhow = "1"
 arrow = "57.2.0"
 parquet = { version = "57.2.0", features = ["arrow"] }
-chronicle-core = { path = "../../1-primitives/chronicle-core" }
-chronicle-protocol = { path = "../../1-primitives/chronicle-protocol" }
+chronicle = { path = "../../chronicle" }
 chronicle-replay = { path = "../../3-engine/chronicle-replay" }
+clap = { version = "4.5.54", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-chronicle-core = { path = "../../1-primitives/chronicle-core" }
-chronicle-protocol = { path = "../../1-primitives/chronicle-protocol" }
+chronicle = { path = "../../chronicle" }
 anyhow = "1"
 
 [dev-dependencies]

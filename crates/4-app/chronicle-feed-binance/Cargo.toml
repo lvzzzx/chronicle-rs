@@ -5,8 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
-chronicle-core = { path = "../../1-primitives/chronicle-core" }
-chronicle-protocol = { path = "../../1-primitives/chronicle-protocol" }
+chronicle = { path = "../../chronicle" }
 tokio = { version = "1.28", features = ["full"] }
 tokio-tungstenite = { version = "0.20", features = ["rustls-tls-native-roots"] }
 serde = { version = "1.0", features = ["derive"] }

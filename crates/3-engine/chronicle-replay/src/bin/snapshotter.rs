@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
-use chronicle_core::{ReaderConfig, StartMode};
-use chronicle_protocol::{BookMode, L2Snapshot, PriceLevelUpdate};
+use chronicle::core::{ReaderConfig, StartMode};
+use chronicle::protocol::{BookMode, L2Snapshot, PriceLevelUpdate};
 use chronicle_replay::snapshot::{
     SnapshotMetadata, SnapshotPlanner, SnapshotPolicy, SnapshotRetention, SnapshotWriter,
     SNAPSHOT_VERSION,

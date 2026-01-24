@@ -57,8 +57,8 @@ Chronicle-RS supports a **two-tier layout** to keep live IPC fast while preservi
 
 The system is split into two layers to ensure the critical data path remains lightweight:
 
-1.  **Data Plane (`chronicle-core`):** The heavy lifter. Handles the binary queue format, atomic appending, segment rolling, and `futex`/spin waiting.
-2.  **Control Plane (`chronicle-bus`):** The glue. Handles directory structures, process discovery, and RAII resource cleanup.
+1.  **Data Plane (`chronicle::core`):** The heavy lifter. Handles the binary queue format, atomic appending, segment rolling, and `futex`/spin waiting.
+2.  **Control Plane (`chronicle::bus`):** The glue. Handles directory structures, process discovery, and RAII resource cleanup.
 
 ### Topology Example
 Chronicle-RS enforces a **Multi-Process Architecture**:
@@ -88,8 +88,7 @@ See [DESIGN.md](docs/DESIGN.md) for the complete architectural specification.
 
 ```toml
 [dependencies]
-chronicle-core = { path = "crates/1-primitives/chronicle-core" }
-chronicle-bus = { path = "crates/2-infra/chronicle-bus" }
+chronicle = { path = "crates/chronicle" }
 ```
 
 ---
@@ -100,7 +99,7 @@ chronicle-bus = { path = "crates/2-infra/chronicle-bus" }
 Create a queue and write a message.
 
 ```rust
-use chronicle_core::Queue;
+use chronicle::core::Queue;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Open a queue for writing at ./data/my_queue
@@ -122,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Read messages from the queue.
 
 ```rust
-use chronicle_core::Queue;
+use chronicle::core::Queue;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Open the same queue as a reader named "strategy_1"
@@ -147,13 +146,13 @@ Run the demo processes in separate terminals:
 
 ```bash
 # Terminal 1: market data feed
-cargo run -p chronicle-bus --example feed -- --bus-root ./demo_bus
+cargo run -p chronicle --example feed -- --bus-root ./demo_bus
 
 # Terminal 2: strategy filtering BTC and emitting orders
-cargo run -p chronicle-bus --example strategy -- --bus-root ./demo_bus --strategy strategy_a --symbol BTC
+cargo run -p chronicle --example strategy -- --bus-root ./demo_bus --strategy strategy_a --symbol BTC
 
 # Terminal 3: router discovery + ack loop
-cargo run -p chronicle-bus --example router -- --bus-root ./demo_bus
+cargo run -p chronicle --example router -- --bus-root ./demo_bus
 ```
 
 Expected log excerpts:
@@ -223,7 +222,7 @@ Standard deployment structure (configurable root):
 ```
 
 ### Tuning Parameters
-While most defaults are sane, you can tune `chronicle-core` behavior via config:
+While most defaults are sane, you can tune `chronicle::core` behavior via config:
 *   `SPIN_US`: Microseconds to busy-loop before sleeping (default: `10us`).
 *   `WriterConfig.segment_size_bytes`: Size of queue files (default: `128MiB`). Stored in `control.meta` and used by all readers/writers for an existing queue.
 
@@ -251,7 +250,7 @@ cargo test --test reader_recovery
 ### Benchmarking
 Measure the raw throughput of your filesystem/memory subsystem.
 ```bash
-cargo bench -p chronicle-core
+cargo bench -p chronicle
 ```
 
 ---

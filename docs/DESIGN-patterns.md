@@ -191,7 +191,7 @@ If `WriterConfig` has `max_bytes` or `max_segments` set, `append()` performs per
 
 2.  **Sidecar Thread:** Run a cleanup loop.
     ```rust
-    use chronicle_core::retention::cleanup_segments;
+    use chronicle::core::retention::cleanup_segments;
     
     // In Sidecar Thread
     thread::spawn(move || {

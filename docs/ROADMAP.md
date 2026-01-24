@@ -11,9 +11,9 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Phase 4 (Event Notification) completed; ExecPlan in `execplans/phase-4-event-notification.md`.
 - Phase 5 (Segment Rolling & Retention) completed; ExecPlan in `execplans/phase-5-segment-rolling.md`.
 - Phase 6 (Multi-Queue Fan-In) completed; ExecPlan in `execplans/phase-6-multi-queue-fanin.md`.
-- Phase 7 (Queue Discovery) completed in `crates/2-infra/chronicle-bus/` (scan + watch + dedup in `RouterDiscovery::poll()` with Linux inotify and periodic rescan fallback).
+- Phase 7 (Queue Discovery) completed in `crates/chronicle/src/bus/` (scan + watch + dedup in `RouterDiscovery::poll()` with Linux inotify and periodic rescan fallback).
 - Phase 8 (Hardening & Benchmarks) completed; ExecPlan in `execplans/phase-8-hardening-benchmarks.md`.
-- Phase 9 (Docs, Examples & Operational Guidance) completed; examples in `crates/2-infra/chronicle-bus/examples` and README quickstart added.
+- Phase 9 (Docs, Examples & Operational Guidance) completed; examples in `crates/chronicle/examples` and README quickstart added.
 - Phase 10 (CLI Tooling) completed; ExecPlan in `execplans/phase-10-cli-tooling.md`.
 - Phase 14 (Binance Market Feed) completed; ExecPlan in `execplans/phase-14-binance-feed.md`.
 
@@ -48,24 +48,24 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Deliverables: merge logic across queues by timestamp.
 - Validation: deterministic ordering across multiple writers.
 
-### Phase 7 — Queue Discovery for Multi-Process Fan-In (chronicle-bus)
-- Deliverables: `chronicle-layout` IPC layouts (`StreamsLayout`, `OrdersLayout`, `StrategyEndpoints`), READY/LEASE markers, `RouterDiscovery` scan + watch, `ReaderRegistration` RAII cleanup.
+### Phase 7 — Queue Discovery for Multi-Process Fan-In (chronicle::bus)
+- Deliverables: `chronicle::layout` IPC layouts (`StreamsLayout`, `OrdersLayout`, `StrategyEndpoints`), READY/LEASE markers, `RouterDiscovery` scan + watch, `ReaderRegistration` RAII cleanup.
 - Status:
   - **Complete**: `StreamsLayout`, `OrdersLayout`, `StrategyEndpoints`, `mark_ready()`, `write_lease()`, `ReaderRegistration` (RAII drop cleanup).
   - **Complete**: `RouterDiscovery::poll()` implements scan + watch (Linux inotify) with periodic rescan fallback.
 - Validation: router attaches/detaches queues dynamically without restart; handles create/delete races safely.
 
-### Phase 8 — Hardening & Benchmarks (chronicle-core)
+### Phase 8 — Hardening & Benchmarks (chronicle::core)
 - Deliverables: stress tests (`stress_single_writer.rs`), soak tests (`soak_writer_reader.rs`), Criterion benchmarks (`append.rs`, `read.rs`).
-- Validation: stable throughput/latency under load; `cargo test -p chronicle-core` and `cargo bench -p chronicle-core` pass.
+- Validation: stable throughput/latency under load; `cargo test -p chronicle` and `cargo bench -p chronicle` pass.
 
 ### Phase 9 — Docs, Examples & Operational Guidance
 - Deliverables:
   - Updated design docs and configuration guidance.
   - **End-to-end example** demonstrating DESIGN.md Section 12 topology:
-    - `crates/2-infra/chronicle-bus/examples/feed.rs` — market data writer (single queue, multiple symbols)
-    - `crates/2-infra/chronicle-bus/examples/strategy.rs` — reads market data, filters symbols, writes orders via `chronicle-bus` layout
-    - `crates/2-infra/chronicle-bus/examples/router.rs` — uses `RouterDiscovery` to find strategies, fan-in merges orders
+    - `crates/chronicle/examples/feed.rs` — market data writer (single queue, multiple symbols)
+    - `crates/chronicle/examples/strategy.rs` — reads market data, filters symbols, writes orders via `chronicle::layout` contract
+    - `crates/chronicle/examples/router.rs` — uses `RouterDiscovery` to find strategies, fan-in merges orders
   - README with quickstart showing how to run the example processes.
 - Validation: example processes run concurrently, demonstrate queue creation, READY markers, discovery, and message flow.
 
@@ -87,7 +87,7 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
   - Standalone crate `chronicle-feed-binance`.
   - WebSocket connection to Binance Spot API via `tokio-tungstenite`.
   - Normalized `BookTicker` binary format for zero-copy reading.
-  - Integration with `chronicle-core` for persistence.
+  - Integration with `chronicle::core` for persistence.
   - CLI for configuration (symbols, queue path).
 - Validation:
   - Connects to Binance and receives live data.

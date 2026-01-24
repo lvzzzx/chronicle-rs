@@ -14,13 +14,12 @@ The workspace is organized into four logical layers, separating stable primitive
 ```text
 chronicle-rs/
 └── crates/
-    ├── 1-primitives/           # Foundations (Stable, unsafe, zero-allocation)
-    │   ├── chronicle-core      # (Existing) The Queue Engine (mmap, append, read)
-    │   └── chronicle-protocol  # (Existing) Wire format, SBE structs, TypeIds
-    │
-    ├── 2-infra/                # System Plumbing (Topology & Storage)
-    │   ├── chronicle-bus       # (Existing) IPC Topology, Discovery, Shm layout
-    │   └── chronicle-storage   # (Refactor) Tiered storage access (Live vs Archive)
+    ├── chronicle/              # Core + Infra (single crate, layered modules)
+    │   ├── core                # Queue engine (mmap, append, read)
+    │   ├── protocol            # Wire format, SBE structs, TypeIds
+    │   ├── layout              # IO-free path contract (IPC + archive)
+    │   ├── bus                 # IPC topology, discovery, READY/LEASE
+    │   └── storage             # Tiered storage access (Live vs Archive)
     │
     ├── 3-engine/               # Logic Processors (The "Brains")
     │   ├── chronicle-replay    # (Existing) Event reconstruction, Ordering, Snapshots
@@ -36,32 +35,32 @@ chronicle-rs/
 
 ### 2.1 Dependency Rules
 
-- A layer may depend only on lower-numbered layers (e.g., `4-app` can depend on `1-primitives`..`3-engine`).
-- `1-primitives` must never depend on higher layers or optional features.
+- A layer may depend only on lower-numbered layers (e.g., `4-app` can depend on `chronicle` + `3-engine`).
+- Within `chronicle`, keep the conceptual layering: `core`/`protocol` should not depend on `bus`/`storage`.
 - Binaries live in their owning crate; CLI-only entrypoints should not be used as shared libraries.
 
 ---
 
 ## 3. Crate Breakdown
 
-### Layer 1: Primitives (The "Kernel")
+### Layer 1: Primitives (The "Kernel") — modules in `chronicle`
 
-*   **`chronicle-core`**
+*   **`chronicle::core`**
     *   **Role:** Single-writer, multi-reader, persistent ring-buffer over mmap.
     *   **Key Features:** CAS-based commits, hybrid wait strategies, retention policies.
     *   **Mandate:** Zero syscalls on the hot path.
 
-*   **`chronicle-protocol`**
+*   **`chronicle::protocol`**
     *   **Role:** The "ABI" of the system. Defines message schemas (SBE/FlatBuffers) and `TypeId` enums.
     *   **Mandate:** Backward compatibility.
 
-### Layer 2: Infrastructure (The "Plumbing")
+### Layer 2: Infrastructure (The "Plumbing") — modules in `chronicle`
 
-*   **`chronicle-bus`**
+*   **`chronicle::bus`**
     *   **Role:** Defines how queues are named and discovered on disk (e.g., `/dev/shm/queue/strategy/alpha_1/orders`).
     *   **Key Features:** Router discovery, channel negotiation.
 
-*   **`chronicle-storage`** (Rename of `chronicle-archive`)
+*   **`chronicle::storage`** (Rename of `chronicle-archive`)
     *   **Role:** Abstraction over long-term data access.
     *   **Key Features:**
         *   **`ArchiveTap`:** Binary to bridge Live Queues -> Archive.

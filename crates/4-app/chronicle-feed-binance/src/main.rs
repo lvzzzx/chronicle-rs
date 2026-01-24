@@ -3,9 +3,8 @@ use clap::Parser;
 use log::info;
 use std::path::PathBuf;
 
-use chronicle_core::Queue;
+use chronicle::core::Queue;
 use chronicle_feed_binance::binance;
-use chronicle_feed_binance::market;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -56,7 +55,7 @@ async fn main() -> Result<()> {
 
     // Initialize Chronicle Writer
     // Use Ultra-Low-Latency config
-    let config = chronicle_core::writer::WriterConfig::ultra_low_latency();
+    let config = chronicle::core::writer::WriterConfig::ultra_low_latency();
     let mut writer = Queue::open_publisher_with_config(&queue_path, config)
         .context("Failed to open queue writer")?;
 

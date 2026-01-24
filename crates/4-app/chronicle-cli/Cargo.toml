@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-chronicle-core = { path = "../../1-primitives/chronicle-core" }
-chronicle-bus = { path = "../../2-infra/chronicle-bus" }
+chronicle = { path = "../../chronicle" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7.5.4"

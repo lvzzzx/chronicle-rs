@@ -1,6 +1,6 @@
 use anyhow::Result;
-use chronicle_core::Queue;
-use chronicle_protocol::{BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId};
+use chronicle::core::Queue;
+use chronicle::protocol::{BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId};
 use clap::Parser;
 use std::collections::BTreeMap;
 use std::path::PathBuf;

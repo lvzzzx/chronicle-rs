@@ -1,4 +1,4 @@
-use chronicle_protocol::BookEventType;
+use chronicle::protocol::BookEventType;
 use chronicle_replay::BookEvent;
 
 use crate::feature::Trigger;

@@ -1,8 +1,8 @@
 # Chronicle Path Contract (v1)
 
 This document defines the **filesystem contract** between the live IPC layer
-(`chronicle-bus`), the fan-out processor, and the archival tiering layer
-(`chronicle-storage`). It is intentionally concrete and versioned.
+(`chronicle::bus`), the fan-out processor, and the archival tiering layer
+(`chronicle::storage`). It is intentionally concrete and versioned.
 
 ## 1) Root Separation (Option A)
 
@@ -22,9 +22,9 @@ The two roots must be independent. IPC is optimized for ultra-low latency and
 ephemeral data. Archive is optimized for stable partitioning, compression, and
 long retention.
 
-## 2) IPC Layout (chronicle-bus)
+## 2) IPC Layout (chronicle::bus)
 
-The IPC layout root is owned by `chronicle-layout::IpcLayout`, which provides
+The IPC layout root is owned by `chronicle::layout::IpcLayout`, which provides
 both `StreamsLayout` (data plane) and `OrdersLayout` (control plane).
 
 ```
@@ -43,7 +43,7 @@ both `StreamsLayout` (data plane) and `OrdersLayout` (control plane).
 - `<symbol>` is the canonical symbol code for the event-time date.
 - `<stream>` is a logical stream name (e.g. `trades`, `book`, `l2`).
 - IPC queues always live under a `queue/` directory.
-- Segment filenames are `{:09}.q` (chronicle-core standard).
+- Segment filenames are `{:09}.q` (`chronicle::core` standard).
 
 ### Optional Live Clean Streams
 If you need live, demultiplexed streams for IPC consumers, add:
@@ -58,9 +58,9 @@ If you need live, demultiplexed streams for IPC consumers, add:
 
 If you are **archive-only**, do not create `streams/clean/...`.
 
-## 3) Archive Layout (chronicle-storage)
+## 3) Archive Layout (chronicle::storage)
 
-The archive layout is owned by `chronicle-storage` and is versioned under `v1/`.
+The archive layout is owned by `chronicle::storage` and is versioned under `v1/`.
 
 ```
 /var/lib/chronicle-archive/
@@ -106,7 +106,7 @@ The fan-out processor is the bridge between IPC and archive.
 
 ## 5) Tiering Contract
 
-`chronicle-storage` only operates inside the Archive Root.
+`chronicle::storage` only operates inside the Archive Root.
 
 - **Hot -> Cold:** `.q` → `.q.zst` + `.q.zst.idx` (seekable)
 - **Cold -> Remote:** copy to remote root and write `.q.zst.remote.json`

@@ -1,4 +1,4 @@
-use chronicle_protocol::{BookTicker, Trade};
+use chronicle::protocol::{BookTicker, Trade};
 
 pub trait Appendable {
     fn size(&self) -> usize;
