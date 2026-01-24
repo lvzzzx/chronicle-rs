@@ -8,7 +8,7 @@ use chronicle_core::segment::{SEG_DATA_OFFSET, SEG_MAGIC, SEG_VERSION};
 use chronicle_core::zstd_seek::{read_seek_index, ZstdSeekIndex};
 use serde::Deserialize;
 
-use crate::resolver::{ResolvedStorage, StorageResolver, StorageTier};
+use super::resolver::{ResolvedStorage, StorageResolver, StorageTier};
 
 pub struct StorageReader {
     tier: StorageTier,
