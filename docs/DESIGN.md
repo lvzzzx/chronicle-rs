@@ -813,22 +813,23 @@ See **[DESIGN-patterns.md](./DESIGN-patterns.md)** for implementation details.
 13. Workspace / Modules
 
 chronicle-rs/
-├── crates/
-│   └── chronicle/
-│       └── src/
-│           ├── lib.rs
-│           ├── core/
-│           │   ├── control.rs
-│           │   ├── header.rs
-│           │   ├── segment.rs
-│           │   ├── writer.rs
-│           │   ├── reader.rs
-│           │   ├── retention.rs
-│           │   └── wait.rs
-│           ├── protocol/
-│           ├── layout/
-│           ├── bus/
-│           └── storage/
+├── src/
+│   ├── lib.rs
+│   ├── core/
+│   │   ├── control.rs
+│   │   ├── header.rs
+│   │   ├── segment.rs
+│   │   ├── writer.rs
+│   │   ├── reader.rs
+│   │   ├── retention.rs
+│   │   └── wait.rs
+│   ├── protocol/
+│   ├── layout/
+│   ├── bus/
+│   └── storage/
+├── examples/
+├── tests/
+├── benches/
 └── docs/
     └── DESIGN.md
 

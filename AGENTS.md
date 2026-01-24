@@ -1,8 +1,8 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Cargo workspace at the repo root (`Cargo.toml`).
-- The primary crate lives at `crates/chronicle/` with modules under `crates/chronicle/src/`.
+- Single crate at the repo root (`Cargo.toml`) with modules under `src/`.
+- Integration tests live under `tests/`, examples under `examples/`, and benches under `benches/`.
 - Architecture documentation lives in `docs/` (notably `docs/DESIGN.md`).
 - Persistent queue data is designed to live under paths like `/var/lib/hft_bus/<bus>/queue/` with per-writer segments and per-reader metadata.
 
@@ -13,10 +13,9 @@
 - Segments roll at a fixed size and can be reclaimed once all readers have passed their ranges.
 
 ## Build, Test, and Development Commands
-- `cargo build` (workspace build)
-- `cargo test` (workspace tests)
-- `cargo test -p chronicle` (crate-local tests)
-- `cargo bench -p chronicle` (benchmarks)
+- `cargo build`
+- `cargo test`
+- `cargo bench`
 
 ## Coding Style & Naming Conventions
 - Use standard Rust formatting (`rustfmt` defaults) and idiomatic naming (`snake_case` for functions/modules, `CamelCase` for types).
@@ -24,7 +23,7 @@
 
 ## Testing Guidelines
 - Prefer `#[cfg(test)]` unit tests near implementation and integration tests in each crate’s `tests/` directory.
-- Follow existing naming patterns (e.g., `reader_recovery.rs` under `crates/chronicle/tests/`).
+- Follow existing naming patterns (e.g., `reader_recovery.rs` under `tests/`).
 
 ## Commit & Pull Request Guidelines
 - Current history uses short, imperative messages; one commit uses a `docs:` prefix. Follow that pattern when appropriate (e.g., `docs: clarify segment rolling`).

@@ -6,14 +6,14 @@
 
 The system is architecturally split into two main components:
 
--   **Data Plane (`chronicle-core`):** The core queue engine. It handles:
+-   **Data Plane (`chronicle::core`):** The core queue engine. It handles:
     -   On-disk segment format and alignment.
     -   Single-writer, lock-free append protocol (with atomic commit).
     -   Multiple independent readers with persisted offsets.
     -   Segment rolling and retention.
     -   Hybrid busy-spin / futex waiting strategies.
 
--   **Control Plane Helper (`chronicle-bus`):** A thin utility layer for coordination. It handles:
+-   **Control Plane Helper (`chronicle::bus`):** A thin utility layer for coordination. It handles:
     -   Standard directory layout (`/queue/<strategy>/...`).
     -   Service readiness (`READY`) and liveness (`LEASE`) signals.
     -   Router discovery (scanning and watching for new queues).
@@ -27,7 +27,7 @@ The system is architecturally split into two main components:
 
 ## Building and Running
 
-This is a Rust workspace. Standard Cargo commands apply.
+This is a single Rust crate. Standard Cargo commands apply.
 
 ### Prerequisites
 -   Rust (stable)
@@ -37,48 +37,47 @@ This is a Rust workspace. Standard Cargo commands apply.
 
 *   **Build Project:**
     ```bash
-    cargo build --workspace
+cargo build
     ```
 
 *   **Run All Tests:**
     ```bash
-    cargo test --workspace
+cargo test
     ```
-    *   *Note:* Integration tests are located in `crates/1-primitives/chronicle-core/tests/` and cover scenarios like recovery, fan-in, and retention.
+    *   *Note:* Integration tests are located in `tests/` and cover scenarios like recovery, fan-in, and retention.
 
 *   **Run Benchmarks:**
     ```bash
-    cargo bench -p chronicle-core
+cargo bench
     ```
 
 *   **Check Formatting & Linting:**
     ```bash
-    cargo fmt --all -- --check
-    cargo clippy --workspace -- -D warnings
+cargo fmt --all -- --check
+cargo clippy -- -D warnings
     ```
 
 ## Project Structure
 
 ```text
 chronicle-rs/
-├── crates/
-│   ├── 1-primitives/
-│   │   ├── chronicle-core/       # Data plane: Queue engine, storage format, append/read logic
-│   │   └── chronicle-protocol/   # Wire format and message schemas
-│   ├── 2-infra/
-│   │   ├── chronicle-bus/        # Control plane: Directory layout, discovery, registration
-│   │   └── chronicle-storage/    # Archive/tiering access
-│   ├── 3-engine/
-│   │   └── chronicle-replay/     # Replay and state reconstruction
-│   └── 4-app/
-│       ├── chronicle-cli/        # CLI tooling
-│       ├── chronicle-etl/        # Batch ETL
-│       └── chronicle-feed-binance/ # Binance feed adapter
+├── src/                      # Single crate with layered modules
+│   ├── core                  # Data plane: Queue engine, storage format, append/read logic
+│   ├── protocol              # Wire format and message schemas
+│   ├── layout                # Path contract (IPC + archive)
+│   ├── bus                   # Control plane: Directory layout, discovery, registration
+│   ├── storage               # Archive/tiering access
+│   ├── replay                # Replay and state reconstruction
+│   ├── etl                   # Batch ETL
+│   ├── feed_binance           # Binance feed adapter
+│   └── cli                   # CLI support modules
 ├── docs/
 │   ├── DESIGN.md             # Normative architectural specification (READ THIS FIRST)
 │   └── ROADMAP.md            # Project milestones and status
+├── examples/                 # Demo binaries
 ├── execplans/                # Detailed implementation plans for each phase
-└── tests/                    # Integration tests (if applicable outside crates)
+├── benches/                  # Criterion benchmarks
+└── tests/                    # Integration tests
 ```
 
 ## Development Conventions
@@ -88,7 +87,7 @@ chronicle-rs/
 3.  **Safety First:** This project uses `unsafe` for mmap and atomic operations. Comments must justify safety. Miri checks are encouraged where feasible.
 4.  **Testing:**
     -   **Unit Tests:** Inside `src/` modules.
-    -   **Integration Tests:** In `crates/1-primitives/chronicle-core/tests/`. Focus on resilience (recovery, disk full, concurrent rolling).
+    -   **Integration Tests:** In `tests/`. Focus on resilience (recovery, disk full, concurrent rolling).
 5.  **Code Style:** Standard Rust style. No unique formatting rules.
 
 ## Documentation

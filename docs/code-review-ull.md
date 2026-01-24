@@ -14,7 +14,7 @@ However, the current implementation introduces **unbounded latencies** in the cr
 
 ### 2.1 Critical: Dynamic Allocation in `SeekIndexBuilder` (Hot Path)
 
-**Location:** `crates/chronicle/src/core/seek_index.rs`
+**Location:** `src/core/seek_index.rs`
 **Severity:** High (Latency Jitter)
 
 The `SeekIndexBuilder` maintains an in-memory `Vec<SeekIndexEntry>` that grows as records are appended.
@@ -47,7 +47,7 @@ Since `segment_size` and `entry_stride` are known at creation time, we can calcu
 
 ### 2.2 Major: Intermediate Allocations in Feed Handler
 
-**Location:** `crates/chronicle/src/feed_binance/binance.rs`
+**Location:** `src/feed_binance/binance.rs`
 **Severity:** Medium (Throughput/GC pressure)
 
 The Binance feed handler allocates intermediate vectors for Bids and Asks before writing them to the queue.
@@ -76,7 +76,7 @@ For a high-throughput feed (e.g., Binance Futures during volatility), this creat
 
 ### 2.3 Minor: Timestamp Precision in Replay
 
-**Location:** `crates/chronicle/src/replay/mod.rs`
+**Location:** `src/replay/mod.rs`
 
 The replay engine uses `SystemTime` for wall-clock benchmarks. Ensure that in production replay, we strictly use `ingest_ts_ns` from the record header to simulate "time passing," rather than checking the CPU clock.
 

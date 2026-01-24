@@ -88,7 +88,8 @@ See [DESIGN.md](docs/DESIGN.md) for the complete architectural specification.
 
 ```toml
 [dependencies]
-chronicle = { path = "crates/chronicle" }
+# Point to the Chronicle-RS repo root from your workspace.
+chronicle = { path = "../chronicle-rs" }
 ```
 
 ---
@@ -146,13 +147,13 @@ Run the demo processes in separate terminals:
 
 ```bash
 # Terminal 1: market data feed
-cargo run -p chronicle --example feed -- --bus-root ./demo_bus
+cargo run --example feed -- --bus-root ./demo_bus
 
 # Terminal 2: strategy filtering BTC and emitting orders
-cargo run -p chronicle --example strategy -- --bus-root ./demo_bus --strategy strategy_a --symbol BTC
+cargo run --example strategy -- --bus-root ./demo_bus --strategy strategy_a --symbol BTC
 
 # Terminal 3: router discovery + ack loop
-cargo run -p chronicle --example router -- --bus-root ./demo_bus
+cargo run --example router -- --bus-root ./demo_bus
 ```
 
 Expected log excerpts:
@@ -172,16 +173,16 @@ The `chron-cli` binary provides queue inspection and debugging utilities:
 
 ```bash
 # Inspect a queue's head position, readers, and lock status.
-cargo run -p chronicle --bin chronicle-cli -- inspect ./demo_bus/market_data/queue/demo_feed
+cargo run --bin chronicle-cli -- inspect ./demo_bus/market_data/queue/demo_feed
 
 # Tail messages (first 3) with hexdumps.
-cargo run -p chronicle --bin chronicle-cli -- tail ./demo_bus/market_data/queue/demo_feed --limit 3
+cargo run --bin chronicle-cli -- tail ./demo_bus/market_data/queue/demo_feed --limit 3
 
 # Scan a bus root for stale locks and retention candidates.
-cargo run -p chronicle --bin chronicle-cli -- doctor ./demo_bus
+cargo run --bin chronicle-cli -- doctor ./demo_bus
 
 # Run a local throughput benchmark (keeps the queue on disk).
-cargo run -p chronicle --bin chronicle-cli -- bench --queue-path ./cli_demo --messages 10000 --payload-bytes 64 --keep
+cargo run --bin chronicle-cli -- bench --queue-path ./cli_demo --messages 10000 --payload-bytes 64 --keep
 ```
 
 ---
@@ -193,7 +194,7 @@ Chronicle-RS includes a high-performance, standalone adapter for Binance Spot ma
 
 ```bash
 # Run the Binance feed (subscribes to BTCUSDT, ETHUSDT)
-cargo run -p chronicle --bin chronicle-feed-binance --release -- --symbols "btcusdt,ethusdt" --queue ./data/market/binance
+cargo run --bin chronicle-feed-binance --release -- --symbols "btcusdt,ethusdt" --queue ./data/market/binance
 ```
 
 Data is written as normalized binary structs (`BookTicker`) for zero-copy consumption by strategies.
@@ -250,7 +251,7 @@ cargo test --test reader_recovery
 ### Benchmarking
 Measure the raw throughput of your filesystem/memory subsystem.
 ```bash
-cargo bench -p chronicle
+cargo bench
 ```
 
 ---

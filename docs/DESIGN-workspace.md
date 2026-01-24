@@ -1,4 +1,4 @@
-# Chronicle-RS Workspace Architecture (v2.0 Proposal)
+# Chronicle-RS Repository Architecture (single-crate layout)
 
 **Status:** Draft / Proposal
 **Date:** 2026-01-23
@@ -9,30 +9,29 @@ To transition Chronicle-RS from a collection of low-level primitives into a cohe
 
 ## 2. Layered Architecture
 
-The workspace is organized into four logical layers, separating stable primitives from dynamic application logic. This diagram reflects the physical layout under `crates/`.
+The repo is organized into four logical layers, separating stable primitives from dynamic application logic. This diagram reflects the physical layout at the repo root.
 
 ```text
 chronicle-rs/
-└── crates/
-    ├── chronicle/              # Core + Infra (single crate, layered modules)
-    │   ├── core                # Queue engine (mmap, append, read)
-    │   ├── protocol            # Wire format, SBE structs, TypeIds
-    │   ├── layout              # IO-free path contract (IPC + archive)
-    │   ├── bus                 # IPC topology, discovery, READY/LEASE
-    │   └── storage             # Tiered storage access (Live vs Archive)
-    │
-    ├── 3-engine/               # Logic Processors (The "Brains")
-    │   └── chronicle-sim       # (NEW) Matching Engine Simulator, Latency models, PnL accounting
-    │
-    └── 4-app/                  # Application SDKs (The "User Interface")
-        ├── chronicle-api       # (NEW) Shared Traits (Context, Strategy) defining the contract
-        └── chronicle-framework # (NEW) Live Runtime (Pinning, Signals, Busy-Loops)
+├── src/                        # Core + Infra + Engine + Apps (single crate, layered modules)
+│   ├── core                    # Queue engine (mmap, append, read)
+│   ├── protocol                # Wire format, SBE structs, TypeIds
+│   ├── layout                  # IO-free path contract (IPC + archive)
+│   ├── bus                     # IPC topology, discovery, READY/LEASE
+│   ├── storage                 # Tiered storage access (Live vs Archive)
+│   ├── replay                  # Replay + state reconstruction
+│   ├── etl                     # Batch ETL (Arrow/Parquet)
+│   ├── feed_binance             # Binance feed adapter
+│   └── cli                     # CLI support modules
+├── examples/                   # Runnable demos (feed/strategy/router)
+├── tests/                      # Integration tests
+└── benches/                    # Criterion benchmarks
 ```
 
 ### 2.1 Dependency Rules
 
-- A layer may depend only on lower-numbered layers (e.g., `4-app` can depend on `chronicle` + `3-engine`).
-- Within `chronicle`, keep the conceptual layering: `core`/`protocol` should not depend on `bus`/`storage`.
+- A layer may depend only on lower-numbered layers (e.g., `cli`/`feed_binance` can depend on `replay`/`storage`/`bus`).
+- Within the crate, keep the conceptual layering: `core`/`protocol` should not depend on `bus`/`storage`.
 - Binaries live in their owning crate; CLI-only entrypoints should not be used as shared libraries.
 
 ---
