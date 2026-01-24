@@ -6,7 +6,6 @@ use anyhow::{bail, Result};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageTier {
     Hot,
-    Warm,
     Cold,
     RemoteCold,
 }
@@ -30,7 +29,6 @@ pub enum ResolvedStorage {
 #[derive(Debug, Clone)]
 pub struct StorageResolver {
     hot_root: Option<PathBuf>,
-    warm_root: Option<PathBuf>,
     cold_root: Option<PathBuf>,
     cache_root: PathBuf,
 }
@@ -40,7 +38,6 @@ impl StorageResolver {
         let root = root.into();
         Self {
             hot_root: Some(root.clone()),
-            warm_root: Some(root.clone()),
             cold_root: Some(root),
             cache_root: PathBuf::from("/tmp/chronicle-cache"),
         }
@@ -48,12 +45,10 @@ impl StorageResolver {
 
     pub fn with_roots(
         hot_root: Option<PathBuf>,
-        warm_root: Option<PathBuf>,
         cold_root: Option<PathBuf>,
     ) -> Self {
         Self {
             hot_root,
-            warm_root,
             cold_root,
             cache_root: PathBuf::from("/tmp/chronicle-cache"),
         }
@@ -78,7 +73,6 @@ impl StorageResolver {
         let mut seen = HashSet::new();
         let candidates = [
             (StorageTier::Hot, self.hot_root.as_ref()),
-            (StorageTier::Warm, self.warm_root.as_ref()),
             (StorageTier::Cold, self.cold_root.as_ref()),
         ];
 
@@ -96,7 +90,6 @@ impl StorageResolver {
         if let Some(root) = self
             .cold_root
             .as_ref()
-            .or(self.warm_root.as_ref())
             .or(self.hot_root.as_ref())
         {
             let base = partition_path(root, venue, symbol_code, date);

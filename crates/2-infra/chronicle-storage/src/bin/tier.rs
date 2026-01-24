@@ -16,7 +16,7 @@ struct Cli {
     #[arg(long, default_value_t = 1_048_576)]
     block_size: usize,
 
-    /// Age threshold in seconds before moving warm -> cold
+    /// Age threshold in seconds before moving hot -> cold
     #[arg(long, default_value_t = 0)]
     cold_after_secs: u64,
 
