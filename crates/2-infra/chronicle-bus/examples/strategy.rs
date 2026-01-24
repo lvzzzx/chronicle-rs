@@ -2,9 +2,10 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chronicle_bus::{BusLayout, StrategyId};
+use chronicle_bus::{mark_ready, OrdersLayout, StrategyId};
 use chronicle_core::merge::FanInReader;
 use chronicle_core::{Error, Queue, QueueReader};
+use chronicle_layout::IpcLayout;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -15,8 +16,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let options = parse_args(&args)?;
     let strategy_id = StrategyId(options.strategy.clone());
-    let layout = BusLayout::new(&options.bus_root);
-    let endpoints = layout.strategy_endpoints(&strategy_id);
+    let ipc = IpcLayout::new(&options.bus_root);
+    let orders = ipc.orders();
+    let endpoints = orders
+        .strategy_endpoints(&strategy_id)
+        .expect("invalid strategy id for orders endpoints");
 
     println!(
         "strategy {}: bus_root={} symbol={}",
@@ -25,7 +29,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         options.symbol
     );
 
-    let feed_path = layout.live_stream_queue("market_data").join("demo_feed");
+    let feed_path = ipc
+        .streams()
+        .raw_queue_dir("market_data")
+        .expect("invalid venue for raw queue path");
 
     let reader_name = format!("reader_{}", strategy_id.0);
     let feed_reader = open_subscriber_retry(&feed_path, &reader_name)?;
@@ -35,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut orders_in_connected = false;
 
     let mut orders_out_writer = Queue::open_publisher(&endpoints.orders_out)?;
-    layout.mark_ready(&endpoints.orders_out)?;
+    mark_ready(&endpoints.orders_out)?;
     println!(
         "strategy {}: READY {}",
         strategy_id.0,

@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chronicle_bus::BusLayout;
+use chronicle_layout::IpcLayout;
 use chronicle_core::Queue;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,8 +13,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let bus_root = parse_bus_root(&args)?;
-    let layout = BusLayout::new(&bus_root);
-    let queue_path = layout.live_stream_queue("market_data").join("demo_feed");
+    let layout = IpcLayout::new(&bus_root);
+    let queue_path = layout
+        .streams()
+        .raw_queue_dir("market_data")
+        .expect("invalid venue for raw queue path");
     println!(
         "feed: bus_root={} queue={}",
         bus_root.display(),

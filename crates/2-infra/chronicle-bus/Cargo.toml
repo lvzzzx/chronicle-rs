@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 chronicle-core = { path = "../../1-primitives/chronicle-core" }
+chronicle-layout = { path = "../chronicle-layout" }
 anyhow = "1"
 thiserror = "1"
 # For discovery/fswatch (implementation pending)

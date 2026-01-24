@@ -3,6 +3,7 @@ members = [
     "crates/1-primitives/chronicle-core",
     "crates/1-primitives/chronicle-protocol",
     "crates/2-infra/chronicle-bus",
+    "crates/2-infra/chronicle-layout",
     "crates/2-infra/chronicle-storage",
     "crates/3-engine/chronicle-replay",
     "crates/4-app/chronicle-cli",

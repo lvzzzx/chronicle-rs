@@ -3,10 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::layout::{BusLayout, StrategyId};
+use chronicle_layout::{OrdersLayout, StrategyId};
 
 pub struct RouterDiscovery {
-    layout: BusLayout,
+    layout: OrdersLayout,
     initialized: bool,
     known: HashSet<StrategyId>,
     watcher: platform::Watcher,
@@ -25,8 +25,8 @@ pub enum DiscoveryEvent {
 }
 
 impl RouterDiscovery {
-    pub fn new(layout: BusLayout) -> std::io::Result<Self> {
-        let orders_root = orders_root(&layout);
+    pub fn new(layout: OrdersLayout) -> std::io::Result<Self> {
+        let orders_root = layout.orders_root();
         fs::create_dir_all(&orders_root)?;
         let watcher = platform::Watcher::new(&orders_root)?;
         Ok(Self {
@@ -66,7 +66,10 @@ impl RouterDiscovery {
 
         for strategy in current.difference(&self.known) {
             let strategy = strategy.clone();
-            let endpoints = self.layout.strategy_endpoints(&strategy);
+            let endpoints = self
+                .layout
+                .strategy_endpoints(&strategy)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
             events.push(DiscoveryEvent::Added {
                 strategy,
                 orders_out: endpoints.orders_out,
@@ -84,19 +87,15 @@ impl RouterDiscovery {
         Ok(events)
     }
 
-    pub fn layout(&self) -> &BusLayout {
+    pub fn layout(&self) -> &OrdersLayout {
         &self.layout
     }
 }
 
 const RESCAN_INTERVAL: Duration = Duration::from_millis(500);
 
-fn orders_root(layout: &BusLayout) -> PathBuf {
-    layout.root.join("orders").join("queue")
-}
-
-fn scan_ready_strategies(layout: &BusLayout) -> std::io::Result<HashSet<StrategyId>> {
-    let root = orders_root(layout);
+fn scan_ready_strategies(layout: &OrdersLayout) -> std::io::Result<HashSet<StrategyId>> {
+    let root = layout.orders_root();
     fs::create_dir_all(&root)?;
     let mut found = HashSet::new();
     let entries = match fs::read_dir(&root) {
@@ -131,7 +130,10 @@ fn scan_ready_strategies(layout: &BusLayout) -> std::io::Result<HashSet<Strategy
             continue;
         }
         let strategy = StrategyId(name);
-        let endpoints = layout.strategy_endpoints(&strategy);
+        let endpoints = match layout.strategy_endpoints(&strategy) {
+            Ok(endpoints) => endpoints,
+            Err(_) => continue,
+        };
         if is_ready(&endpoints.orders_out) {
             found.insert(strategy);
         }

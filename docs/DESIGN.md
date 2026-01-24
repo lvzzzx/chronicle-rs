@@ -594,10 +594,26 @@ impl QueueReader {
 11.2 chronicle-bus API (control plane helper; intentionally thin)
 
 11.2.1 Layout and endpoints
-chronicle-bus standardizes where queues live and how they are named.
+The IPC layout is standardized by `chronicle-layout`. Control-plane helpers
+(READY/LEASE) live in `chronicle-bus`.
 
-pub struct BusLayout {
-    pub root: std::path::PathBuf,  // e.g. /var/lib/hft_bus
+pub struct IpcLayout {
+    root: std::path::PathBuf, // e.g. /var/lib/hft_bus
+}
+
+impl IpcLayout {
+    pub fn new(root: impl Into<std::path::PathBuf>) -> Self;
+    pub fn streams(&self) -> StreamsLayout;
+    pub fn orders(&self) -> OrdersLayout;
+}
+
+pub struct StreamsLayout {
+    root: std::path::PathBuf,
+}
+
+impl StreamsLayout {
+    pub fn raw_queue_dir(&self, venue: &str) -> Result<std::path::PathBuf>;
+    pub fn clean_queue_dir(&self, venue: &str, symbol: &str, stream: &str) -> Result<std::path::PathBuf>;
 }
 
 pub struct StrategyId(pub String);
@@ -607,14 +623,16 @@ pub struct StrategyEndpoints {
     pub orders_in: std::path::PathBuf,  // router -> strategy
 }
 
-impl BusLayout {
-    pub fn new(root: impl Into<std::path::PathBuf>) -> Self;
-
-    pub fn strategy_endpoints(&self, id: &StrategyId) -> StrategyEndpoints;
-
-    pub fn mark_ready(&self, endpoint_dir: &std::path::Path) -> std::io::Result<()>;
-    pub fn write_lease(&self, endpoint_dir: &std::path::Path, payload: &[u8]) -> std::io::Result<()>;
+pub struct OrdersLayout {
+    root: std::path::PathBuf,
 }
+
+impl OrdersLayout {
+    pub fn strategy_endpoints(&self, id: &StrategyId) -> Result<StrategyEndpoints>;
+}
+
+pub fn mark_ready(endpoint_dir: &std::path::Path) -> std::io::Result<()>;
+pub fn write_lease(endpoint_dir: &std::path::Path, payload: &[u8]) -> std::io::Result<()>;
 
 READY semantics:
 	•	Strategy/router writes READY.tmp then rename() to READY atomically once initialization is complete.
@@ -657,7 +675,7 @@ pub enum DiscoveryEvent {
 }
 
 impl RouterDiscovery {
-    pub fn new(layout: BusLayout) -> std::io::Result<Self>;
+    pub fn new(layout: OrdersLayout) -> std::io::Result<Self>;
 
     /// Returns newly added/removed strategy queues since the last poll.
     pub fn poll(&mut self) -> std::io::Result<Vec<DiscoveryEvent>>;
@@ -680,7 +698,7 @@ Implementation notes:
 │  Binance Feed Process          Coinbase Feed Process         │
 │  ├─ WS: 100 symbols           ├─ WS: 80 symbols             │
 │  └─ Writes to:                └─ Writes to:                 │
-│     binance_spot/queue/          coinbase_pro/queue/        │
+│     streams/raw/binance_spot/queue/  streams/raw/coinbase_pro/queue/ │
 └─────────────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -688,7 +706,7 @@ Implementation notes:
 │                    Strategy Layer                            │
 ├─────────────────────────────────────────────────────────────┤
 │  Strategy A (Arb)              Strategy B (Market Making)    │
-│  ├─ Reads: binance_spot       ├─ Reads: binance_spot        │
+│  ├─ Reads: streams/raw/binance_spot  ├─ Reads: streams/raw/binance_spot │
 │  ├─ Filters: BTC,ETH,SOL      ├─ Filters: BTC,ETH           │
 │  └─ Writes to:                └─ Writes to:                 │
 │     orders/queue/strategy_A/     orders/queue/strategy_B/   │

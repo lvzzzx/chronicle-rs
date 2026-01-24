@@ -3,8 +3,9 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chronicle_bus::{BusLayout, DiscoveryEvent, RouterDiscovery, StrategyId};
+use chronicle_bus::{mark_ready, DiscoveryEvent, RouterDiscovery, StrategyId};
 use chronicle_core::{Queue, QueueReader, QueueWriter};
+use chronicle_layout::IpcLayout;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -14,10 +15,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let bus_root = parse_bus_root(&args)?;
-    let layout = BusLayout::new(&bus_root);
+    let layout = IpcLayout::new(&bus_root).orders();
     let mut discovery = RouterDiscovery::new(layout)?;
 
-    println!("router: bus_root={}", discovery.layout().root.display());
+    println!("router: bus_root={}", discovery.layout().root().display());
 
     let mut handles: HashMap<StrategyId, StrategyHandle> = HashMap::new();
 
@@ -33,10 +34,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if handles.contains_key(&strategy) {
                         continue;
                     }
-                    let endpoints = discovery.layout().strategy_endpoints(&strategy);
+                    let endpoints = discovery
+                        .layout()
+                        .strategy_endpoints(&strategy)
+                        .expect("invalid strategy id for orders endpoints");
                     let reader = Queue::open_subscriber(&orders_out, "router")?;
                     let writer = Queue::open_publisher(&endpoints.orders_in)?;
-                    discovery.layout().mark_ready(&endpoints.orders_in)?;
+                    mark_ready(&endpoints.orders_in)?;
                     println!(
                         "router: discovered {} (orders_out={}, orders_in={})",
                         strategy.0,

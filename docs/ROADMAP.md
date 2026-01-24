@@ -49,9 +49,9 @@ This roadmap tracks major milestones for the Chronicle-style persisted messaging
 - Validation: deterministic ordering across multiple writers.
 
 ### Phase 7 — Queue Discovery for Multi-Process Fan-In (chronicle-bus)
-- Deliverables: `BusLayout`, `StrategyEndpoints`, READY/LEASE markers, `RouterDiscovery` scan + watch, `ReaderRegistration` RAII cleanup.
+- Deliverables: `chronicle-layout` IPC layouts (`StreamsLayout`, `OrdersLayout`, `StrategyEndpoints`), READY/LEASE markers, `RouterDiscovery` scan + watch, `ReaderRegistration` RAII cleanup.
 - Status:
-  - **Complete**: `BusLayout`, `StrategyEndpoints`, `mark_ready()`, `write_lease()`, `ReaderRegistration` (RAII drop cleanup).
+  - **Complete**: `StreamsLayout`, `OrdersLayout`, `StrategyEndpoints`, `mark_ready()`, `write_lease()`, `ReaderRegistration` (RAII drop cleanup).
   - **Complete**: `RouterDiscovery::poll()` implements scan + watch (Linux inotify) with periodic rescan fallback.
 - Validation: router attaches/detaches queues dynamically without restart; handles create/delete races safely.
 
