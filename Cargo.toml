@@ -101,3 +101,11 @@ path = "src/bin/chronicle_raw_archiver.rs"
 [[bin]]
 name = "chronicle-csv-import"
 path = "src/bin/chronicle_csv_import.rs"
+
+[[bin]]
+name = "chronicle-szse-import"
+path = "src/bin/chronicle_szse_import.rs"
+
+[[bin]]
+name = "chronicle-szse-recon"
+path = "src/bin/chronicle_szse_recon.rs"

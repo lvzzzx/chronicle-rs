@@ -56,6 +56,28 @@ impl ArchiveWriter {
         })
     }
 
+    pub fn new_at_dir(stream_dir: impl Into<PathBuf>, segment_size: usize) -> Result<Self> {
+        let segment_size = if segment_size == 0 {
+            DEFAULT_SEGMENT_SIZE
+        } else {
+            segment_size
+        };
+        let segment_size = validate_segment_size(segment_size as u64)?;
+        let stream_dir = stream_dir.into();
+        std::fs::create_dir_all(&stream_dir)?;
+        let segment_id = next_segment_id(&stream_dir)?;
+        Ok(Self {
+            stream_dir,
+            segment_size,
+            segment_id,
+            write_offset: SEG_DATA_OFFSET as u64,
+            seq: 0,
+            mmap: None,
+            segments_written: 0,
+            has_records: false,
+        })
+    }
+
     pub fn segments_written(&self) -> u64 {
         self.segments_written
     }
