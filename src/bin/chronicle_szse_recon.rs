@@ -46,6 +46,10 @@ struct Args {
     #[arg(long)]
     limit: Option<u64>,
 
+    /// Filter to a specific symbol (e.g. 000001)
+    #[arg(long)]
+    symbol: Option<String>,
+
     /// Write a JSON checkpoint to this path on completion
     #[arg(long)]
     checkpoint: Option<PathBuf>,
@@ -85,9 +89,15 @@ fn main() -> Result<()> {
 
     let mut applied = 0u64;
     let mut skipped = 0u64;
+    let mut filtered = 0u64;
     let mut total = 0u64;
     let start = Instant::now();
     let mut channel_id: Option<u32> = None;
+    let symbol_filter = args
+        .symbol
+        .as_deref()
+        .map(parse_symbol)
+        .transpose()?;
 
     'segments: for segment in segments {
         let mut reader = StorageReader::open_segment(&segment)?;
@@ -120,6 +130,12 @@ fn main() -> Result<()> {
             }
 
             sequencer.check(l3.header.seq)?;
+            if let Some(target) = symbol_filter {
+                if l3.header.market_id != target {
+                    filtered = filtered.saturating_add(1);
+                    continue;
+                }
+            }
             let worker_idx = worker_index(l3.header.market_id, worker_count);
             senders[worker_idx].send(l3)?;
             applied = applied.saturating_add(1);
@@ -162,19 +178,20 @@ fn main() -> Result<()> {
             write_checkpoint_json(path, checkpoint)?;
         }
         println!(
-            "channel={} last_seq={} symbols={} total={} applied={} skipped={} rate={:.2} msg/s",
+            "channel={} last_seq={} symbols={} total={} applied={} skipped={} filtered={} rate={:.2} msg/s",
             checkpoint.channel,
             checkpoint.last_seq,
             checkpoint.symbols.len(),
             total,
             applied,
             skipped,
+            filtered,
             msg_per_sec
         );
     } else {
         println!(
-            "total={} applied={} skipped={} rate={:.2} msg/s",
-            total, applied, skipped, msg_per_sec
+            "total={} applied={} skipped={} filtered={} rate={:.2} msg/s",
+            total, applied, skipped, filtered, msg_per_sec
         );
     }
 
@@ -263,4 +280,17 @@ fn worker_index(symbol: u32, worker_count: usize) -> usize {
     let mut hasher = DefaultHasher::new();
     symbol.hash(&mut hasher);
     (hasher.finish() as usize) % worker_count
+}
+
+fn parse_symbol(raw: &str) -> Result<u32> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("symbol is empty"));
+    }
+    if !trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!("symbol must be numeric, got {}", trimmed));
+    }
+    trimmed
+        .parse::<u32>()
+        .map_err(|_| anyhow!("symbol out of range: {}", trimmed))
 }
