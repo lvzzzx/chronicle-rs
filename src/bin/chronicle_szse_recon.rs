@@ -9,6 +9,7 @@ use chronicle::reconstruct::szse_l3::{
     decode_l3_message, write_checkpoint_json, ChannelCheckpoint, ChannelSequencer, DecodePolicy,
     GapPolicy, L3Message, SymbolCheckpoint, SzseL3Worker, UnknownOrderPolicy,
 };
+use chronicle::protocol::{BookEventHeader, BookEventType, BookMode};
 use chronicle::storage::StorageReader;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -103,39 +104,49 @@ fn main() -> Result<()> {
         let mut reader = StorageReader::open_segment(&segment)?;
         while let Some(message) = reader.next()? {
             total = total.saturating_add(1);
-            let Some(l3) = decode_l3_message(&message, decode_policy)? else {
+            let Some(header) = read_book_header(message.payload) else {
                 skipped = skipped.saturating_add(1);
                 continue;
             };
 
+            if header.book_mode != BookMode::L3 as u8 || header.event_type != BookEventType::Diff as u8 {
+                skipped = skipped.saturating_add(1);
+                continue;
+            }
+
             if let Some(expected) = args.channel {
-                if l3.header.stream_id != expected {
+                if header.stream_id != expected {
                     return Err(anyhow!(
                         "unexpected channel {}, expected {}",
-                        l3.header.stream_id,
+                        header.stream_id,
                         expected
                     ));
                 }
             }
             if let Some(expected) = channel_id {
-                if l3.header.stream_id != expected {
+                if header.stream_id != expected {
                     return Err(anyhow!(
                         "unexpected channel {}, expected {}",
-                        l3.header.stream_id,
+                        header.stream_id,
                         expected
                     ));
                 }
             } else {
-                channel_id = Some(l3.header.stream_id);
+                channel_id = Some(header.stream_id);
             }
 
-            sequencer.check(l3.header.seq)?;
+            sequencer.check(header.seq)?;
             if let Some(target) = symbol_filter {
-                if l3.header.market_id != target {
+                if header.market_id != target {
                     filtered = filtered.saturating_add(1);
                     continue;
                 }
             }
+
+            let Some(l3) = decode_l3_message(&message, decode_policy)? else {
+                skipped = skipped.saturating_add(1);
+                continue;
+            };
             let worker_idx = worker_index(l3.header.market_id, worker_count);
             senders[worker_idx].send(l3)?;
             applied = applied.saturating_add(1);
@@ -293,4 +304,13 @@ fn parse_symbol(raw: &str) -> Result<u32> {
     trimmed
         .parse::<u32>()
         .map_err(|_| anyhow!("symbol out of range: {}", trimmed))
+}
+
+fn read_book_header(buf: &[u8]) -> Option<BookEventHeader> {
+    let size = std::mem::size_of::<BookEventHeader>();
+    if buf.len() < size {
+        return None;
+    }
+    let ptr = unsafe { buf.as_ptr() as *const BookEventHeader };
+    Some(unsafe { std::ptr::read_unaligned(ptr) })
 }
