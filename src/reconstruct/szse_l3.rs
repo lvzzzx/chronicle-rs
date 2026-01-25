@@ -57,6 +57,7 @@ pub struct L3Message {
     pub event: L3Event,
 }
 
+#[derive(Debug)]
 pub struct ChannelSequencer {
     last_seq: Option<u64>,
     policy: GapPolicy,
@@ -500,7 +501,7 @@ impl L3Book {
         if order_id == 0 {
             return Ok(());
         }
-        let Some(order) = self.orders.get_mut(&order_id) else {
+        let Some(mut order) = self.orders.remove(&order_id) else {
             return match policy {
                 UnknownOrderPolicy::Fail => Err(anyhow!("cancel unknown order {}", order_id)),
                 UnknownOrderPolicy::Skip => Ok(()),
@@ -513,13 +514,9 @@ impl L3Book {
             event.qty.min(order.qty)
         };
         order.qty = order.qty.saturating_sub(cancel_qty);
-        if order.qty == 0 {
-            let price = order.price;
-            let side = order.side;
-            self.orders.remove(&order_id);
-            self.remove_from_level(side, price, order_id, cancel_qty);
-        } else {
-            self.remove_from_level(order.side, order.price, order_id, cancel_qty);
+        self.remove_from_level(order.side, order.price, order_id, cancel_qty);
+        if order.qty != 0 {
+            self.orders.insert(order_id, order);
         }
         Ok(())
     }
@@ -534,7 +531,7 @@ impl L3Book {
         if order_id == 0 {
             return Ok(());
         }
-        let Some(order) = self.orders.get_mut(&order_id) else {
+        let Some(mut order) = self.orders.remove(&order_id) else {
             return match policy {
                 UnknownOrderPolicy::Fail => Err(anyhow!("modify unknown order {}", order_id)),
                 UnknownOrderPolicy::Skip => Ok(()),
@@ -556,6 +553,7 @@ impl L3Book {
             if old_qty != 0 {
                 self.remove_from_level(old_side, old_price, order_id, old_qty);
             }
+            self.orders.insert(order_id, order);
             return Ok(());
         }
 
@@ -566,7 +564,10 @@ impl L3Book {
             let level = match order.side {
                 L3Side::Buy => self.bids.entry(order.price).or_default(),
                 L3Side::Sell => self.asks.entry(order.price).or_default(),
-                L3Side::Unknown => return Ok(()),
+                L3Side::Unknown => {
+                    self.orders.insert(order_id, order);
+                    return Ok(());
+                }
             };
             if order.qty > old_qty {
                 level.total_qty = level.total_qty.saturating_add(order.qty - old_qty);
@@ -574,6 +575,7 @@ impl L3Book {
                 level.total_qty = level.total_qty.saturating_sub(old_qty - order.qty);
             }
         }
+        self.orders.insert(order_id, order);
         Ok(())
     }
 
@@ -606,7 +608,7 @@ impl L3Book {
         qty: u64,
         policy: UnknownOrderPolicy,
     ) -> Result<()> {
-        let Some(order) = self.orders.get_mut(&order_id) else {
+        let Some(mut order) = self.orders.remove(&order_id) else {
             return match policy {
                 UnknownOrderPolicy::Fail => Err(anyhow!("trade unknown order {}", order_id)),
                 UnknownOrderPolicy::Skip => Ok(()),
@@ -615,13 +617,9 @@ impl L3Book {
         order.last_exchange_ts_ns = header.exchange_ts_ns;
         let trade_qty = if qty == 0 { order.qty } else { qty.min(order.qty) };
         order.qty = order.qty.saturating_sub(trade_qty);
-        if order.qty == 0 {
-            let price = order.price;
-            let side = order.side;
-            self.orders.remove(&order_id);
-            self.remove_from_level(side, price, order_id, trade_qty);
-        } else {
-            self.remove_from_level(order.side, order.price, order_id, trade_qty);
+        self.remove_from_level(order.side, order.price, order_id, trade_qty);
+        if order.qty != 0 {
+            self.orders.insert(order_id, order);
         }
         Ok(())
     }

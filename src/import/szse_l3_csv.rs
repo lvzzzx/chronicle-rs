@@ -167,7 +167,7 @@ pub fn import_szse_l3_channel(
             seen_channel = Some(row_channel);
             stats.channel = row_channel;
             let stream_dir = szse_channel_dir(archive_root, date, row_channel)?;
-            let mut w = ArchiveWriter::new_at_dir(stream_dir, segment_size)?;
+            let w = ArchiveWriter::new_at_dir(stream_dir, segment_size)?;
             writer = Some(w);
         }
 
