@@ -140,7 +140,7 @@ impl BinanceFeed {
             // Trigger snapshot fetches for all symbols
             for symbol in &self.symbols {
                 let symbol = symbol.to_uppercase();
-                
+
                 // Transition to buffering immediately
                 states.insert(symbol.clone(), SymbolState::Buffering(VecDeque::new()));
                 self.request_snapshot(&symbol, &snapshot_tx, Duration::ZERO);
@@ -179,7 +179,7 @@ impl BinanceFeed {
                             }
                             Err(e) => {
                                 error!("WS Error: {}", e);
-                                break; 
+                                break;
                             }
                             _ => {}
                         }
@@ -210,7 +210,7 @@ impl BinanceFeed {
                     else => break, // Channel closed or stream ended
                 }
             }
-            
+
             warn!("Disconnected or error. Reconnecting...");
             sleep(Duration::from_secs(5)).await;
         }
@@ -347,7 +347,12 @@ impl BinanceFeed {
                             error!("Failed to build depth event: {}", e);
                         }
                     }
-                    states.insert(symbol, SymbolState::Synced { last_u: update.final_update_id });
+                    states.insert(
+                        symbol,
+                        SymbolState::Synced {
+                            last_u: update.final_update_id,
+                        },
+                    );
                 }
                 other => {
                     states.insert(symbol, other);
@@ -369,7 +374,10 @@ impl BinanceFeed {
             if !delay.is_zero() {
                 sleep(delay).await;
             }
-            let url = format!("{}/api/v3/depth?symbol={}&limit=1000", BINANCE_API_URL, symbol);
+            let url = format!(
+                "{}/api/v3/depth?symbol={}&limit=1000",
+                BINANCE_API_URL, symbol
+            );
             let result: Result<BinanceSnapshot> = async {
                 let resp = client.get(&url).send().await?;
                 let resp = resp.error_for_status()?;
@@ -388,7 +396,7 @@ impl BinanceFeed {
             streams.push(format!("{}@trade", s.to_lowercase()));
             streams.push(format!("{}@depth@100ms", s.to_lowercase()));
         }
-        
+
         let query = format!("streams={}", streams.join("/"));
         let mut url = self.url.clone();
         url.set_path("stream");
@@ -433,10 +441,10 @@ impl BinanceFeed {
         let asks = parse_levels(&update.asks, price_scale, size_scale);
         let record_len = book_event_len::<L2Diff>(bids.len(), asks.len())?;
 
-        let bid_count = u16::try_from(bids.len())
-            .map_err(|_| anyhow::anyhow!("bid_count exceeds u16"))?;
-        let ask_count = u16::try_from(asks.len())
-            .map_err(|_| anyhow::anyhow!("ask_count exceeds u16"))?;
+        let bid_count =
+            u16::try_from(bids.len()).map_err(|_| anyhow::anyhow!("bid_count exceeds u16"))?;
+        let ask_count =
+            u16::try_from(asks.len()).map_err(|_| anyhow::anyhow!("ask_count exceeds u16"))?;
 
         Ok(L2DiffEvent {
             header: BookEventHeader {
@@ -576,11 +584,7 @@ fn write_struct<T>(buf: &mut [u8], offset: usize, value: &T) {
     }
 }
 
-fn write_levels(
-    buf: &mut [u8],
-    mut offset: usize,
-    levels: &[PriceLevelUpdate],
-) -> usize {
+fn write_levels(buf: &mut [u8], mut offset: usize, levels: &[PriceLevelUpdate]) -> usize {
     let size = levels.len() * std::mem::size_of::<PriceLevelUpdate>();
     if size == 0 {
         return offset;
@@ -594,11 +598,11 @@ fn write_levels(
     offset
 }
 
-fn book_event_len<T>(bid_len: usize, ask_len: usize) -> Result<u16> {
+fn book_event_len<T>(bid_len: usize, ask_len: usize) -> Result<u32> {
     let total = std::mem::size_of::<BookEventHeader>()
         + std::mem::size_of::<T>()
         + (bid_len + ask_len) * std::mem::size_of::<PriceLevelUpdate>();
-    u16::try_from(total).map_err(|_| anyhow::anyhow!("BookEvent record_len exceeds u16"))
+    u32::try_from(total).map_err(|_| anyhow::anyhow!("BookEvent record_len exceeds u32"))
 }
 
 fn max_scales(bids: &[(String, String)], asks: &[(String, String)]) -> (u8, u8) {
@@ -650,9 +654,9 @@ fn parse_fixed(value: &str, scale: u8) -> u64 {
         frac_val = frac_trimmed[..frac_len].parse::<u128>().unwrap_or(0);
     }
 
-    let scaled = int_val
-        .saturating_mul(pow10 as u128)
-        .saturating_add(frac_val.saturating_mul(POW10[(scale as usize).saturating_sub(frac_len)] as u128));
+    let scaled = int_val.saturating_mul(pow10 as u128).saturating_add(
+        frac_val.saturating_mul(POW10[(scale as usize).saturating_sub(frac_len)] as u128),
+    );
     scaled.min(u64::MAX as u128) as u64
 }
 

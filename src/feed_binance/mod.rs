@@ -1,2 +1,2 @@
-pub mod market;
 pub mod binance;
+pub mod market;

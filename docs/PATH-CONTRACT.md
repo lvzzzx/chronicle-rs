@@ -73,6 +73,19 @@ The archive layout is owned by `chronicle::storage` and is versioned under `v1/`
     000000000.q.zst.remote.json
 ```
 
+### Raw Archive Layout (sealed raw segments)
+
+Raw archival segments live under a single archive root with a `raw/` prefix:
+
+```
+/var/lib/chronicle-archive/
+  raw/v1/<venue>/<date>/raw/
+    000000000.q
+    meta.json
+    000000000.q.zst
+    000000000.q.zst.idx
+```
+
 ### Archive Naming Rules
 - `<date>` is UTC partition date, format `YYYY-MM-DD`.
 - The archive path is **partitioned by event-time**.
@@ -152,6 +165,11 @@ Optional (only if live clean streams are enabled):
 /var/lib/chronicle-archive/v1/binance-perp/btc-usdt/2026-01-24/trades/000000123.q.zst
 ```
 
+### Raw archive (tiered)
+```
+/var/lib/chronicle-archive/raw/v1/binance-perp/2026-01-24/raw/000000123.q
+```
+
 ## 9) CSV / Third-Party Imports (Archive-Only)
 
 Batch imports should bypass IPC and write **directly to archive**:
@@ -165,3 +183,8 @@ Batch imports should bypass IPC and write **directly to archive**:
 - Preserve per-stream ordering if possible. If not, set `meta.json.completeness`
   to indicate unordered or partial data.
 - Write `meta.json` with source details (`provider`, `file_name`, ingest time).
+- Record an idempotency ledger under:
+
+```
+/var/lib/chronicle-archive/imports/v1/tardis/<venue>/<symbol>/<date>/<hash>.json
+```

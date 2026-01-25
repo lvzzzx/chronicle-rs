@@ -1,11 +1,11 @@
-use anyhow::{anyhow, Result};
+use super::catalog::{SymbolCatalog, SymbolIdentity};
 use crate::core::{Queue, QueueWriter, WriterConfig};
 use crate::protocol::{
     book_flags, BookEventHeader, BookEventType, BookMode, L2Snapshot, PriceLevelUpdate, TypeId,
     PROTOCOL_VERSION,
 };
 use crate::replay::{L2Book, ReplayEngine, ReplayMessage};
-use super::catalog::{SymbolCatalog, SymbolIdentity};
+use anyhow::{anyhow, Result};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -30,7 +30,7 @@ impl Refinery {
         catalog: Arc<RwLock<SymbolCatalog>>,
     ) -> Result<Self> {
         let engine = ReplayEngine::open(input_path, reader_name)?;
-        
+
         // Use Archive config for output (flushes index frequently)
         let config = WriterConfig::archive();
         let writer = Queue::open_publisher_with_config(output_path, config)?;
@@ -70,12 +70,14 @@ impl Refinery {
                     .map_err(|_| anyhow!("symbol catalog lock poisoned"))?;
                 guard
                     .resolve_by_market_id(venue_id, market_id, event_ts_ns)
-                    .ok_or_else(|| anyhow!(
-                        "symbol not found for venue_id={} market_id={} event_ts_ns={}",
-                        venue_id,
-                        market_id,
-                        event_ts_ns
-                    ))?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "symbol not found for venue_id={} market_id={} event_ts_ns={}",
+                            venue_id,
+                            market_id,
+                            event_ts_ns
+                        )
+                    })?
             };
 
             ensure_active_symbol(
@@ -94,21 +96,11 @@ impl Refinery {
             };
 
             if should_snapshot {
-                inject_snapshot(
-                    writer,
-                    msg.book,
-                    event_ts_ns,
-                    venue_id,
-                    market_id,
-                )?;
+                inject_snapshot(writer, msg.book, event_ts_ns, venue_id, market_id)?;
                 *last_snapshot_ns = event_ts_ns;
             }
 
-            writer.append_with_timestamp(
-                msg.msg.type_id,
-                msg.msg.payload,
-                msg.msg.timestamp_ns,
-            )?;
+            writer.append_with_timestamp(msg.msg.type_id, msg.msg.payload, msg.msg.timestamp_ns)?;
 
             drop(msg);
             engine.commit()?;
@@ -124,85 +116,89 @@ fn inject_snapshot(
     venue_id: u16,
     market_id: u32,
 ) -> Result<()> {
-        // 1. Calculate size
-        let bid_count = book.bids().len();
-        let ask_count = book.asks().len();
-        let (price_scale, size_scale) = book.scales();
+    // 1. Calculate size
+    let bid_count = book.bids().len();
+    let ask_count = book.asks().len();
+    let (price_scale, size_scale) = book.scales();
 
-        let header_size = std::mem::size_of::<BookEventHeader>();
-        let snapshot_size = std::mem::size_of::<L2Snapshot>();
-        let level_size = std::mem::size_of::<PriceLevelUpdate>();
-        let payload_len = header_size + snapshot_size + (bid_count + ask_count) * level_size;
+    let header_size = std::mem::size_of::<BookEventHeader>();
+    let snapshot_size = std::mem::size_of::<L2Snapshot>();
+    let level_size = std::mem::size_of::<PriceLevelUpdate>();
+    let payload_len = header_size + snapshot_size + (bid_count + ask_count) * level_size;
+    let record_len =
+        u32::try_from(payload_len).map_err(|_| anyhow!("BookEvent record_len exceeds u32"))?;
 
-        writer.append_in_place_with_timestamp(
-            TypeId::BookEvent.as_u16(),
-            payload_len,
-            timestamp_ns,
-            |buf| {
-                // Write Header
-                let header = BookEventHeader {
-                    schema_version: PROTOCOL_VERSION,
-                    record_len: payload_len as u16,
-                    endianness: 0,
-                    _pad0: 0,
-                    venue_id,
-                    market_id,
-                    stream_id: 0,
-                    ingest_ts_ns: timestamp_ns,
-                    exchange_ts_ns: timestamp_ns,
-                    seq: 0,
-                    native_seq: 0,
-                    event_type: BookEventType::Snapshot as u8,
-                    book_mode: BookMode::L2 as u8,
-                    flags: book_flags::ABSOLUTE,
-                    _pad1: 0,
+    writer.append_in_place_with_timestamp(
+        TypeId::BookEvent.as_u16(),
+        payload_len,
+        timestamp_ns,
+        |buf| {
+            // Write Header
+            let header = BookEventHeader {
+                schema_version: PROTOCOL_VERSION,
+                record_len,
+                endianness: 0,
+                _pad0: 0,
+                venue_id,
+                market_id,
+                stream_id: 0,
+                ingest_ts_ns: timestamp_ns,
+                exchange_ts_ns: timestamp_ns,
+                seq: 0,
+                native_seq: 0,
+                event_type: BookEventType::Snapshot as u8,
+                book_mode: BookMode::L2 as u8,
+                flags: book_flags::ABSOLUTE,
+                _pad1: 0,
+            };
+            // Safety: We simply cast the struct to bytes. Protocol crate should handle this.
+            // For now, manual serialization to avoid dependency hell in this snippet.
+            let header_bytes = unsafe {
+                std::slice::from_raw_parts(&header as *const _ as *const u8, header_size)
+            };
+            buf[0..header_size].copy_from_slice(header_bytes);
+
+            // Write Snapshot Body
+            let snapshot = L2Snapshot {
+                bid_count: bid_count as u32,
+                ask_count: ask_count as u32,
+                price_scale,
+                size_scale,
+                _pad0: 0,
+            };
+            let snapshot_bytes = unsafe {
+                std::slice::from_raw_parts(&snapshot as *const _ as *const u8, snapshot_size)
+            };
+            let offset = header_size;
+            buf[offset..offset + snapshot_size].copy_from_slice(snapshot_bytes);
+
+            // Write Levels
+            let mut offset = header_size + snapshot_size;
+            for (price, size) in book.bids().iter().rev() {
+                // Bids desc
+                let level = PriceLevelUpdate {
+                    price: *price,
+                    size: *size,
                 };
-                // Safety: We simply cast the struct to bytes. Protocol crate should handle this.
-                // For now, manual serialization to avoid dependency hell in this snippet.
-                let header_bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        &header as *const _ as *const u8,
-                        header_size,
-                    )
-                };
-                buf[0..header_size].copy_from_slice(header_bytes);
-
-                // Write Snapshot Body
-                let snapshot = L2Snapshot {
-                    bid_count: bid_count as u32,
-                    ask_count: ask_count as u32,
-                    price_scale,
-                    size_scale,
-                    _pad0: 0,
-                };
-                let snapshot_bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        &snapshot as *const _ as *const u8,
-                        snapshot_size,
-                    )
-                };
-                let offset = header_size;
-                buf[offset..offset+snapshot_size].copy_from_slice(snapshot_bytes);
-
-                // Write Levels
-                let mut offset = header_size + snapshot_size;
-                for (price, size) in book.bids().iter().rev() { // Bids desc
-                    let level = PriceLevelUpdate { price: *price, size: *size };
-                    let bytes = unsafe { std::mem::transmute::<_, [u8; 16]>(level) };
-                    buf[offset..offset+16].copy_from_slice(&bytes);
-                    offset += 16;
-                }
-                for (price, size) in book.asks().iter() { // Asks asc
-                    let level = PriceLevelUpdate { price: *price, size: *size };
-                    let bytes = unsafe { std::mem::transmute::<_, [u8; 16]>(level) };
-                    buf[offset..offset+16].copy_from_slice(&bytes);
-                    offset += 16;
-                }
-
-                Ok(())
+                let bytes = unsafe { std::mem::transmute::<_, [u8; 16]>(level) };
+                buf[offset..offset + 16].copy_from_slice(&bytes);
+                offset += 16;
             }
-        )?;
-        Ok(())
+            for (price, size) in book.asks().iter() {
+                // Asks asc
+                let level = PriceLevelUpdate {
+                    price: *price,
+                    size: *size,
+                };
+                let bytes = unsafe { std::mem::transmute::<_, [u8; 16]>(level) };
+                buf[offset..offset + 16].copy_from_slice(&bytes);
+                offset += 16;
+            }
+
+            Ok(())
+        },
+    )?;
+    Ok(())
 }
 
 fn ensure_active_symbol(

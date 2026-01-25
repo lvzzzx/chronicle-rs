@@ -87,8 +87,14 @@ impl SeekIndexBuilder {
     pub(crate) fn observe(&mut self, seq: u64, timestamp_ns: u64, offset: u64) {
         self.min_seq = Some(self.min_seq.map_or(seq, |cur| cur.min(seq)));
         self.max_seq = Some(self.max_seq.map_or(seq, |cur| cur.max(seq)));
-        self.min_ts_ns = Some(self.min_ts_ns.map_or(timestamp_ns, |cur| cur.min(timestamp_ns)));
-        self.max_ts_ns = Some(self.max_ts_ns.map_or(timestamp_ns, |cur| cur.max(timestamp_ns)));
+        self.min_ts_ns = Some(
+            self.min_ts_ns
+                .map_or(timestamp_ns, |cur| cur.min(timestamp_ns)),
+        );
+        self.max_ts_ns = Some(
+            self.max_ts_ns
+                .map_or(timestamp_ns, |cur| cur.max(timestamp_ns)),
+        );
 
         if self.record_index == self.next_entry_at {
             self.entries.push(SeekIndexEntry {
@@ -96,9 +102,7 @@ impl SeekIndexBuilder {
                 timestamp_ns,
                 offset,
             });
-            self.next_entry_at = self
-                .next_entry_at
-                .saturating_add(self.entry_stride as u64);
+            self.next_entry_at = self.next_entry_at.saturating_add(self.entry_stride as u64);
         }
         self.record_index = self.record_index.saturating_add(1);
     }

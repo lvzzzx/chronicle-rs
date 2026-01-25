@@ -43,10 +43,7 @@ impl StorageResolver {
         }
     }
 
-    pub fn with_roots(
-        hot_root: Option<PathBuf>,
-        cold_root: Option<PathBuf>,
-    ) -> Self {
+    pub fn with_roots(hot_root: Option<PathBuf>, cold_root: Option<PathBuf>) -> Self {
         Self {
             hot_root,
             cold_root,
@@ -87,11 +84,7 @@ impl StorageResolver {
             }
         }
 
-        if let Some(root) = self
-            .cold_root
-            .as_ref()
-            .or(self.hot_root.as_ref())
-        {
+        if let Some(root) = self.cold_root.as_ref().or(self.hot_root.as_ref()) {
             let base = partition_path(root, venue, symbol_code, date);
             let zst_path = base.join(format!("{stream}.q.zst"));
             let idx_path = zst_idx_path(&zst_path);

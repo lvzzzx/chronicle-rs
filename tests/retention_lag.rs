@@ -1,7 +1,5 @@
 use chronicle::core::retention::cleanup_segments;
-use chronicle::core::segment::{
-    create_segment, store_reader_meta, ReaderMeta, SEG_DATA_OFFSET,
-};
+use chronicle::core::segment::{create_segment, store_reader_meta, ReaderMeta, SEG_DATA_OFFSET};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
@@ -27,8 +25,8 @@ fn retention_ignores_lagging_reader() {
     store_reader_meta(&meta_path, &mut meta).expect("store meta");
 
     let head_segment = (10_u64 * 1024 * 1024 * 1024 / TEST_SEGMENT_SIZE as u64) + 2;
-    let deleted = cleanup_segments(&queue_path, head_segment, 0, TEST_SEGMENT_SIZE as u64)
-        .expect("cleanup");
+    let deleted =
+        cleanup_segments(&queue_path, head_segment, 0, TEST_SEGMENT_SIZE as u64).expect("cleanup");
 
     assert!(deleted.contains(&0));
     assert!(deleted.contains(&1));

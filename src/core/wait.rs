@@ -5,9 +5,12 @@ use crate::core::Result;
 
 #[cfg(target_os = "linux")]
 pub fn futex_wait(addr: &AtomicU32, expected: u32, timeout: Option<Duration>) -> Result<()> {
-    use libc::{syscall, timespec, EAGAIN, EINTR, ETIMEDOUT, FUTEX_WAIT, SYS_futex};
+    use libc::{syscall, timespec, SYS_futex, EAGAIN, EINTR, ETIMEDOUT, FUTEX_WAIT};
 
-    let mut ts = timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     let ts_ptr = if let Some(timeout) = timeout {
         ts.tv_sec = timeout.as_secs() as libc::time_t;
         ts.tv_nsec = timeout.subsec_nanos() as libc::c_long;
@@ -39,7 +42,7 @@ pub fn futex_wait(addr: &AtomicU32, expected: u32, timeout: Option<Duration>) ->
 
 #[cfg(target_os = "linux")]
 pub fn futex_wake(addr: &AtomicU32) -> Result<()> {
-    use libc::{syscall, FUTEX_WAKE, SYS_futex};
+    use libc::{syscall, SYS_futex, FUTEX_WAKE};
     let res = unsafe {
         syscall(
             SYS_futex,

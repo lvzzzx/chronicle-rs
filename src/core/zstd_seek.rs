@@ -99,10 +99,8 @@ pub fn read_seek_index(path: &Path) -> Result<ZstdSeekIndex> {
     let mut buf = [0u8; ZSTD_INDEX_ENTRY_LEN as usize];
     for _ in 0..count {
         file.read_exact(&mut buf)?;
-        let uncompressed_offset =
-            u64::from_le_bytes(buf[0..8].try_into().expect("slice length"));
-        let compressed_offset =
-            u64::from_le_bytes(buf[8..16].try_into().expect("slice length"));
+        let uncompressed_offset = u64::from_le_bytes(buf[0..8].try_into().expect("slice length"));
+        let compressed_offset = u64::from_le_bytes(buf[8..16].try_into().expect("slice length"));
         let compressed_size = u32::from_le_bytes(buf[16..20].try_into().expect("slice length"));
         let uncompressed_size = u32::from_le_bytes(buf[20..24].try_into().expect("slice length"));
         entries.push(ZstdSeekEntry {

@@ -124,18 +124,15 @@ fn list_active_delta_files(table_path: &Path) -> Result<Vec<PathBuf>> {
         }
     }
 
-    Ok(active
-        .into_iter()
-        .map(|rel| table_path.join(rel))
-        .collect())
+    Ok(active.into_iter().map(|rel| table_path.join(rel)).collect())
 }
 
 fn load_parquet_file(
     file_path: &Path,
     by_market: &mut HashMap<(u16, u32), Vec<SymbolVersion>>,
 ) -> Result<()> {
-    let file = File::open(file_path)
-        .with_context(|| format!("open parquet {}", file_path.display()))?;
+    let file =
+        File::open(file_path).with_context(|| format!("open parquet {}", file_path.display()))?;
     let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
         .with_batch_size(2048)
         .build()?;

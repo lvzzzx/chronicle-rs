@@ -62,7 +62,9 @@ impl ControlFile {
         block.version.store(CTRL_VERSION, Ordering::Relaxed);
         block.segment_size.store(segment_size, Ordering::Relaxed);
         block.segment_gen.store(0, Ordering::Relaxed);
-        block.current_segment.store(current_segment, Ordering::Relaxed);
+        block
+            .current_segment
+            .store(current_segment, Ordering::Relaxed);
         block.write_offset.store(write_offset, Ordering::Relaxed);
         block.writer_epoch.store(writer_epoch, Ordering::Relaxed);
         block.writer_heartbeat_ns.store(0, Ordering::Relaxed);
@@ -160,7 +162,9 @@ impl ControlFile {
 
     pub fn set_segment_index(&self, segment: u32, offset: u64) {
         self.block().segment_gen.fetch_add(1, Ordering::SeqCst);
-        self.block().current_segment.store(segment, Ordering::Relaxed);
+        self.block()
+            .current_segment
+            .store(segment, Ordering::Relaxed);
         self.block().write_offset.store(offset, Ordering::Relaxed);
         self.block().segment_gen.fetch_add(1, Ordering::SeqCst);
     }

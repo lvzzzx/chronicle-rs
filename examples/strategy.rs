@@ -54,13 +54,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         // Now wait() works for ALL connected sources (Smart Yield strategy)
         fanin.wait()?;
-        
+
         while let Some(msg) = fanin.next()? {
             let source = msg.source;
             let text = std::str::from_utf8(&msg.payload).unwrap_or("");
 
             match source {
-                0 => { // Market Data Feed
+                0 => {
+                    // Market Data Feed
                     if payload_symbol_matches(text, &options.symbol) {
                         let order_id = order_seq;
                         let payload = format!(
@@ -72,8 +73,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         order_seq = order_seq.wrapping_add(1);
                     }
                 }
-                1 => { // Order Acks (once connected)
-                     println!("strategy {}: ack {text}", strategy_id.0);
+                1 => {
+                    // Order Acks (once connected)
+                    println!("strategy {}: ack {text}", strategy_id.0);
                 }
                 _ => {}
             }
@@ -160,7 +162,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     })
 }
 
-fn open_subscriber_retry(path: &PathBuf, reader_name: &str) -> Result<QueueReader, Box<dyn std::error::Error>> {
+fn open_subscriber_retry(
+    path: &PathBuf,
+    reader_name: &str,
+) -> Result<QueueReader, Box<dyn std::error::Error>> {
     loop {
         match Queue::open_subscriber(path, reader_name) {
             Ok(reader) => return Ok(reader),

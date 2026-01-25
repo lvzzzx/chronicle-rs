@@ -2,8 +2,8 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
 use crate::core::zstd_seek::{read_seek_index, write_seek_index, ZstdSeekEntry, ZstdSeekIndex};
+use anyhow::{anyhow, Context, Result};
 
 const DEFAULT_ZSTD_LEVEL: i32 = 3;
 
@@ -33,9 +33,8 @@ pub fn compress_q_to_zst(
             break;
         }
 
-        let compressed =
-            zstd::stream::encode_all(&buf[..read_len], DEFAULT_ZSTD_LEVEL)
-                .context("compress block")?;
+        let compressed = zstd::stream::encode_all(&buf[..read_len], DEFAULT_ZSTD_LEVEL)
+            .context("compress block")?;
         if compressed.len() > u32::MAX as usize {
             return Err(anyhow!("compressed block exceeds u32 limit"));
         }
@@ -88,8 +87,7 @@ impl ZstdBlockReader {
         self.file.seek(SeekFrom::Start(entry.compressed_offset))?;
         self.file.read_exact(&mut compressed)?;
 
-        let decompressed = zstd::stream::decode_all(&compressed[..])
-            .context("decompress block")?;
+        let decompressed = zstd::stream::decode_all(&compressed[..]).context("decompress block")?;
 
         if decompressed.len() != entry.uncompressed_size as usize {
             return Err(anyhow!(
@@ -102,4 +100,3 @@ impl ZstdBlockReader {
         Ok(decompressed)
     }
 }
-

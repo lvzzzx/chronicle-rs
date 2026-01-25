@@ -14,9 +14,8 @@ const LEVEL_COUNT: usize = 1024;
 const DIFF_EVENTS: usize = 10_000;
 
 fn push_struct<T: Copy>(buf: &mut Vec<u8>, value: &T) {
-    let bytes = unsafe {
-        std::slice::from_raw_parts((value as *const T) as *const u8, size_of::<T>())
-    };
+    let bytes =
+        unsafe { std::slice::from_raw_parts((value as *const T) as *const u8, size_of::<T>()) };
     buf.extend_from_slice(bytes);
 }
 
@@ -94,7 +93,8 @@ fn prepare_queue(tmp: &tempfile::TempDir) -> anyhow::Result<std::path::PathBuf> 
     }
 
     let snap_body = build_l2_snapshot_payload(2, 3, &bids, &asks);
-    let snap_payload = build_book_event_payload(0, BookEventType::Snapshot, 1_000, 1_000, &snap_body);
+    let snap_payload =
+        build_book_event_payload(0, BookEventType::Snapshot, 1_000, 1_000, &snap_body);
     writer.append_with_timestamp(TypeId::BookEvent.as_u16(), &snap_payload, 1_000)?;
 
     for i in 0..DIFF_EVENTS {
@@ -108,8 +108,7 @@ fn prepare_queue(tmp: &tempfile::TempDir) -> anyhow::Result<std::path::PathBuf> 
             bid_count: 1,
             ask_count: 0,
         };
-        let mut diff_body =
-            Vec::with_capacity(size_of::<L2Diff>() + size_of::<PriceLevelUpdate>());
+        let mut diff_body = Vec::with_capacity(size_of::<L2Diff>() + size_of::<PriceLevelUpdate>());
         push_struct(&mut diff_body, &diff);
         push_struct(
             &mut diff_body,
@@ -119,13 +118,8 @@ fn prepare_queue(tmp: &tempfile::TempDir) -> anyhow::Result<std::path::PathBuf> 
             },
         );
         let ts = 2_000 + i as u64;
-        let payload = build_book_event_payload(
-            (i + 1) as u64,
-            BookEventType::Diff,
-            ts,
-            ts,
-            &diff_body,
-        );
+        let payload =
+            build_book_event_payload((i + 1) as u64, BookEventType::Diff, ts, ts, &diff_body);
         writer.append_with_timestamp(TypeId::BookEvent.as_u16(), &payload, ts)?;
     }
 

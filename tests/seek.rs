@@ -30,7 +30,9 @@ fn seek_seq_and_timestamp() -> chronicle::core::Result<()> {
     assert_eq!(msg.seq, 10);
 
     assert!(reader.seek_timestamp(1_000_020)?);
-    let msg = reader.next()?.expect("missing message after seek_timestamp");
+    let msg = reader
+        .next()?
+        .expect("missing message after seek_timestamp");
     assert_eq!(msg.seq, 20);
 
     Ok(())

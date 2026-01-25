@@ -72,7 +72,10 @@ fn bench_uds_latency(_c: &mut Criterion) {
     let mut payload = vec![0u8; MSG_SIZE];
     let mut latencies = Vec::with_capacity(LATENCY_SAMPLES);
 
-    println!("\nRunning UDS Latency Benchmark ({} samples)...", LATENCY_SAMPLES);
+    println!(
+        "\nRunning UDS Latency Benchmark ({} samples)...",
+        LATENCY_SAMPLES
+    );
 
     let bench_start = Instant::now();
 
@@ -81,13 +84,13 @@ fn bench_uds_latency(_c: &mut Criterion) {
         payload[0..16].copy_from_slice(&send_time.to_le_bytes());
 
         client.write_all(&payload).unwrap();
-        
+
         // Read exactly MSG_SIZE
         let mut recv_buf = vec![0u8; MSG_SIZE];
         server.read_exact(&mut recv_buf).unwrap();
 
         let recv_time = bench_start.elapsed().as_nanos();
-        
+
         let mut ts_buf = [0u8; 16];
         ts_buf.copy_from_slice(&recv_buf[0..16]);
         let send_ts = u128::from_le_bytes(ts_buf);

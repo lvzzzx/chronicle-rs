@@ -102,7 +102,9 @@ pub struct BookImbalance {
 
 impl BookImbalance {
     pub fn new(depth: usize) -> Self {
-        Self { depth: depth.max(1) }
+        Self {
+            depth: depth.max(1),
+        }
     }
 }
 

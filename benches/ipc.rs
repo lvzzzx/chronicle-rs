@@ -20,10 +20,10 @@ fn bench_throughput(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let dir = tempdir().expect("tempdir");
             let path = dir.path().join("throughput_q");
-            
+
             // Setup Writer
             let mut writer = Queue::open_publisher(&path).expect("writer");
-            
+
             // Setup Reader
             let mut reader = Queue::open_subscriber(&path, "bench_reader").expect("reader");
             // Use BusySpin for max throughput measurement
@@ -47,7 +47,7 @@ fn bench_throughput(c: &mut Criterion) {
 
             barrier.wait();
             let start = Instant::now();
-            
+
             for _ in 0..total_msgs {
                 writer.append(1, black_box(&payload)).expect("append");
             }
@@ -72,8 +72,11 @@ fn run_latency_test(name: &str, strategy: WaitStrategy) {
     let mut payload = vec![0u8; MSG_SIZE];
     let mut latencies = Vec::with_capacity(LATENCY_SAMPLES);
 
-    println!("\nRunning IPC Latency Benchmark: {} ({} samples)...", name, LATENCY_SAMPLES);
-    
+    println!(
+        "\nRunning IPC Latency Benchmark: {} ({} samples)...",
+        name, LATENCY_SAMPLES
+    );
+
     // Warmup
     for _ in 0..1000 {
         writer.append(1, &payload).unwrap();
@@ -90,11 +93,11 @@ fn run_latency_test(name: &str, strategy: WaitStrategy) {
 
         // We still provide a dummy wall-clock to the API
         writer.append(1, &payload).unwrap();
-        
+
         loop {
             if let Some(msg) = reader.next().unwrap() {
                 let recv_time = bench_start.elapsed().as_nanos();
-                
+
                 // Extract send time from payload
                 let mut ts_buf = [0u8; 16];
                 ts_buf.copy_from_slice(&msg.payload[0..16]);
@@ -106,7 +109,7 @@ fn run_latency_test(name: &str, strategy: WaitStrategy) {
             }
             // Busy wait for the benchmark driver to get precise timing
         }
-        
+
         // Rate limit: 10us delay between messages to simulate "steady state" rather than "burst"
         let limit_start = Instant::now();
         while limit_start.elapsed().as_micros() < 10 {
@@ -131,7 +134,10 @@ fn run_latency_test(name: &str, strategy: WaitStrategy) {
 fn bench_latency_suite(_c: &mut Criterion) {
     run_latency_test("BusySpin", WaitStrategy::BusySpin);
     // 10us spin is typical for hybrid strategies
-    run_latency_test("SpinThenPark(10us)", WaitStrategy::SpinThenPark { spin_us: 10 });
+    run_latency_test(
+        "SpinThenPark(10us)",
+        WaitStrategy::SpinThenPark { spin_us: 10 },
+    );
 }
 
 criterion_group!(benches, bench_throughput, bench_latency_suite);

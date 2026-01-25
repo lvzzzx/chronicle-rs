@@ -3,10 +3,10 @@ pub mod lease;
 pub mod ready;
 pub mod registration;
 
+pub use crate::layout::{OrdersLayout, StrategyEndpoints, StrategyId};
 pub use discovery::{
     DiscoveryEvent, RouterDiscovery, SubscriberConfig, SubscriberDiscovery, SubscriberEvent,
 };
-pub use crate::layout::{OrdersLayout, StrategyEndpoints, StrategyId};
 pub use registration::ReaderRegistration;
 
 pub fn mark_ready(endpoint_dir: &std::path::Path) -> std::io::Result<()> {

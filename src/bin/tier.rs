@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::Parser;
 use chronicle::storage::{TierConfig, TierManager};
+use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "chronicle-storage-tier")]

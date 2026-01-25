@@ -31,7 +31,13 @@ pub struct MessageHeader {
 }
 
 impl MessageHeader {
-    pub fn new_uncommitted(seq: u64, timestamp_ns: u64, type_id: u16, flags: u16, reserved_u32: u32) -> Self {
+    pub fn new_uncommitted(
+        seq: u64,
+        timestamp_ns: u64,
+        type_id: u16,
+        flags: u16,
+        reserved_u32: u32,
+    ) -> Self {
         Self {
             commit_len: 0,
             _pad0: 0,
@@ -54,8 +60,7 @@ impl MessageHeader {
             .copy_from_slice(&self.timestamp_ns.to_le_bytes());
         buf[TYPE_ID_OFFSET..TYPE_ID_OFFSET + 2].copy_from_slice(&self.type_id.to_le_bytes());
         buf[FLAGS_OFFSET..FLAGS_OFFSET + 2].copy_from_slice(&self.flags.to_le_bytes());
-        buf[RESERVED_OFFSET..RESERVED_OFFSET + 4]
-            .copy_from_slice(&self.reserved_u32.to_le_bytes());
+        buf[RESERVED_OFFSET..RESERVED_OFFSET + 4].copy_from_slice(&self.reserved_u32.to_le_bytes());
         buf[32..64].copy_from_slice(&self._pad);
         buf
     }
@@ -67,16 +72,26 @@ impl MessageHeader {
                 .expect("slice length"),
         );
         let _pad0 = u32::from_le_bytes(bytes[4..8].try_into().expect("slice length"));
-        let seq = u64::from_le_bytes(bytes[SEQ_OFFSET..SEQ_OFFSET + 8].try_into().expect("slice length"));
+        let seq = u64::from_le_bytes(
+            bytes[SEQ_OFFSET..SEQ_OFFSET + 8]
+                .try_into()
+                .expect("slice length"),
+        );
         let timestamp_ns = u64::from_le_bytes(
             bytes[TIMESTAMP_OFFSET..TIMESTAMP_OFFSET + 8]
                 .try_into()
                 .expect("slice length"),
         );
-        let type_id =
-            u16::from_le_bytes(bytes[TYPE_ID_OFFSET..TYPE_ID_OFFSET + 2].try_into().expect("slice length"));
-        let flags =
-            u16::from_le_bytes(bytes[FLAGS_OFFSET..FLAGS_OFFSET + 2].try_into().expect("slice length"));
+        let type_id = u16::from_le_bytes(
+            bytes[TYPE_ID_OFFSET..TYPE_ID_OFFSET + 2]
+                .try_into()
+                .expect("slice length"),
+        );
+        let flags = u16::from_le_bytes(
+            bytes[FLAGS_OFFSET..FLAGS_OFFSET + 2]
+                .try_into()
+                .expect("slice length"),
+        );
         let reserved_u32 = u32::from_le_bytes(
             bytes[RESERVED_OFFSET..RESERVED_OFFSET + 4]
                 .try_into()

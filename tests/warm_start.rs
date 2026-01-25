@@ -1,13 +1,17 @@
 use chronicle::core::Queue;
-use chronicle::protocol::{book_flags, BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId, PROTOCOL_VERSION};
-use chronicle::replay::snapshot::{SnapshotMetadata, SnapshotRetention, SnapshotWriter, SNAPSHOT_VERSION};
+use chronicle::protocol::{
+    book_flags, BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate,
+    TypeId, PROTOCOL_VERSION,
+};
+use chronicle::replay::snapshot::{
+    SnapshotMetadata, SnapshotRetention, SnapshotWriter, SNAPSHOT_VERSION,
+};
 use chronicle::replay::ReplayEngine;
 use std::mem::size_of;
 
 fn push_struct<T: Copy>(buf: &mut Vec<u8>, value: &T) {
-    let bytes = unsafe {
-        std::slice::from_raw_parts((value as *const T) as *const u8, size_of::<T>())
-    };
+    let bytes =
+        unsafe { std::slice::from_raw_parts((value as *const T) as *const u8, size_of::<T>()) };
     buf.extend_from_slice(bytes);
 }
 
@@ -44,7 +48,8 @@ fn build_book_event_payload(
     exchange_ts_ns: u64,
     body: &[u8],
 ) -> Vec<u8> {
-    let record_len = (size_of::<BookEventHeader>() + body.len()) as u16;
+    let record_len = u32::try_from(size_of::<BookEventHeader>() + body.len())
+        .expect("record_len fits in u32");
     let header = BookEventHeader {
         schema_version: PROTOCOL_VERSION,
         record_len,
@@ -73,13 +78,23 @@ fn warm_start_from_snapshot_replays_forward() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let mut writer = Queue::open_publisher(dir.path())?;
 
-    let bid = PriceLevelUpdate { price: 100, size: 1 };
-    let bid_updated = PriceLevelUpdate { price: 100, size: 2 };
-    let ask = PriceLevelUpdate { price: 101, size: 3 };
+    let bid = PriceLevelUpdate {
+        price: 100,
+        size: 1,
+    };
+    let bid_updated = PriceLevelUpdate {
+        price: 100,
+        size: 2,
+    };
+    let ask = PriceLevelUpdate {
+        price: 101,
+        size: 3,
+    };
 
     // seq0 snapshot event
     let snap_body = build_l2_snapshot_payload(2, 3, &[bid], &[]);
-    let snap_payload = build_book_event_payload(0, BookEventType::Snapshot, 1_000, 1_000, &snap_body);
+    let snap_payload =
+        build_book_event_payload(0, BookEventType::Snapshot, 1_000, 1_000, &snap_body);
     writer.append_with_timestamp(TypeId::BookEvent.as_u16(), &snap_payload, 1_000)?;
 
     // seq1 diff event (update bid size)

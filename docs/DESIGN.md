@@ -198,6 +198,11 @@ Rule: Readers must never read payload bytes unless they have first observed comm
 To maintain microsecond-level latency, the hot path (Market Data and Orders) avoids expensive serialization (JSON, Protobuf, Bincode).
 
 *   **Zero-Copy POD:** Messages should be defined as `#[repr(C)]` or `#[repr(C, packed)]` structs.
+
+4.7 BookEvent payload header (protocol v2)
+
+*   **Header size:** `BookEventHeader` is 64 bytes and precedes the order book payload.
+*   **Length field:** `record_len` is a `u32` that must equal `64 + payload_len`.
 *   **Direct Casting:** Writers cast the struct memory directly to `&[u8]` for `append()`. Readers cast the `mmap` payload pointer back to the struct reference.
 *   **Fixed Layout:** Prefer fixed-size fields (e.g., `u64`, `f64`) over variable-length strings or vectors where possible.
 *   **No Allocation:** Payloads should be stack-allocated or pre-allocated; avoid heap allocations during the `append()` call.

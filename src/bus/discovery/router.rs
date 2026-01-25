@@ -143,7 +143,9 @@ fn scan_ready_strategies(layout: &OrdersLayout) -> std::io::Result<HashSet<Strat
 
 fn is_ready(orders_out: &Path) -> bool {
     let ready_path = orders_out.join("READY");
-    fs::metadata(ready_path).map(|meta| meta.is_file()).unwrap_or(false)
+    fs::metadata(ready_path)
+        .map(|meta| meta.is_file())
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
@@ -166,8 +168,9 @@ mod platform {
 
     impl Watcher {
         pub fn new(dir: &Path) -> io::Result<Self> {
-            let dir_cstr = CString::new(dir.as_os_str().as_bytes())
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "watch path contains NUL"))?;
+            let dir_cstr = CString::new(dir.as_os_str().as_bytes()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "watch path contains NUL")
+            })?;
             let fd = unsafe { inotify_init1(IN_CLOEXEC | IN_NONBLOCK) };
             if fd < 0 {
                 return Err(io::Error::last_os_error());
@@ -189,7 +192,13 @@ mod platform {
         pub fn drain(&mut self) -> io::Result<bool> {
             let mut saw_event = false;
             loop {
-                let len = unsafe { read(self.fd, self.buffer.as_mut_ptr() as *mut _, self.buffer.len()) };
+                let len = unsafe {
+                    read(
+                        self.fd,
+                        self.buffer.as_mut_ptr() as *mut _,
+                        self.buffer.len(),
+                    )
+                };
                 if len < 0 {
                     let err = io::Error::last_os_error();
                     if err.kind() == io::ErrorKind::WouldBlock {

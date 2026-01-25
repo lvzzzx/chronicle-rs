@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::replay::{BookEventPayload, ReplayEngine};
+use anyhow::Result;
 
 use super::feature::{FeatureSet, RowBuffer, RowWriter};
 use super::sink::RowSink;

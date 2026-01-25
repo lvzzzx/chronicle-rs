@@ -30,7 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         for event in events {
             match event {
-                DiscoveryEvent::Added { strategy, orders_out } => {
+                DiscoveryEvent::Added {
+                    strategy,
+                    orders_out,
+                } => {
                     if handles.contains_key(&strategy) {
                         continue;
                     }

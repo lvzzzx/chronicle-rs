@@ -290,7 +290,9 @@ pub fn load_reader_meta(path: &Path) -> Result<ReaderMeta> {
         return Ok(ReaderMeta::new(segment_id, offset, 0, 0));
     }
     if len != reader_meta_file_size() as u64 {
-        return Err(Error::CorruptMetadata("reader metadata has unexpected size"));
+        return Err(Error::CorruptMetadata(
+            "reader metadata has unexpected size",
+        ));
     }
     let mut buf = vec![0u8; reader_meta_file_size()];
     file.read_exact(&mut buf)?;
@@ -305,7 +307,11 @@ pub fn load_reader_meta(path: &Path) -> Result<ReaderMeta> {
 pub fn store_reader_meta(path: &Path, meta: &mut ReaderMeta) -> Result<()> {
     let slot_size = reader_meta_slot_size();
     let file_size = reader_meta_file_size();
-    let mut file = OpenOptions::new().create(true).read(true).write(true).open(path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)?;
     file.set_len(file_size as u64)?;
     meta.generation = meta.generation.saturating_add(1);
     let slot = (meta.generation % 2) as usize;
@@ -405,9 +411,11 @@ pub fn repair_unsealed_tail(mmap: &mut MmapFile, segment_size: usize) -> Result<
             let commit_len = MessageHeader::commit_len_for_payload(payload_len)?;
             let header = MessageHeader::new_uncommitted(0, 0, PAD_TYPE_ID, 0, 0);
             let header_bytes = header.to_bytes();
-            mmap.range_mut(end_offset, HEADER_SIZE)?.copy_from_slice(&header_bytes);
+            mmap.range_mut(end_offset, HEADER_SIZE)?
+                .copy_from_slice(&header_bytes);
             if payload_len > 0 {
-                mmap.range_mut(end_offset + HEADER_SIZE, payload_len)?.fill(0);
+                mmap.range_mut(end_offset + HEADER_SIZE, payload_len)?
+                    .fill(0);
             }
             let header_ptr = unsafe { mmap.as_mut_slice().as_mut_ptr().add(end_offset) };
             MessageHeader::store_commit_len(header_ptr, commit_len);
@@ -456,7 +464,12 @@ fn parse_reader_slot(buf: &[u8]) -> Option<ReaderMeta> {
     let offset = u64::from_le_bytes(buf[8..16].try_into().ok()?);
     let last_heartbeat_ns = u64::from_le_bytes(buf[16..24].try_into().ok()?);
     let generation = u64::from_le_bytes(buf[24..32].try_into().ok()?);
-    Some(ReaderMeta::new(segment_id, offset, last_heartbeat_ns, generation))
+    Some(ReaderMeta::new(
+        segment_id,
+        offset,
+        last_heartbeat_ns,
+        generation,
+    ))
 }
 
 fn select_reader_slot(slot0: Option<ReaderMeta>, slot1: Option<ReaderMeta>) -> Option<ReaderMeta> {

@@ -50,14 +50,20 @@ fn append_two_messages_and_recover() {
     let commit_a = MessageHeader::load_commit_len(&mmap.as_slice()[first_offset] as *const u8);
     assert!(commit_a > 0);
     header_a
-        .validate_crc(&mmap.as_slice()[first_offset + HEADER_SIZE..first_offset + HEADER_SIZE + payload_a.len()])
+        .validate_crc(
+            &mmap.as_slice()
+                [first_offset + HEADER_SIZE..first_offset + HEADER_SIZE + payload_a.len()],
+        )
         .expect("crc alpha");
 
     let header_b = read_header(mmap.as_slice(), second_offset);
     let commit_b = MessageHeader::load_commit_len(&mmap.as_slice()[second_offset] as *const u8);
     assert!(commit_b > 0);
     header_b
-        .validate_crc(&mmap.as_slice()[second_offset + HEADER_SIZE..second_offset + HEADER_SIZE + payload_b.len()])
+        .validate_crc(
+            &mmap.as_slice()
+                [second_offset + HEADER_SIZE..second_offset + HEADER_SIZE + payload_b.len()],
+        )
         .expect("crc bravo");
 
     drop(writer);
@@ -79,6 +85,9 @@ fn append_two_messages_and_recover() {
     let commit_c = MessageHeader::load_commit_len(&mmap.as_slice()[third_offset] as *const u8);
     assert!(commit_c > 0);
     header_c
-        .validate_crc(&mmap.as_slice()[third_offset + HEADER_SIZE..third_offset + HEADER_SIZE + payload_c.len()])
+        .validate_crc(
+            &mmap.as_slice()
+                [third_offset + HEADER_SIZE..third_offset + HEADER_SIZE + payload_c.len()],
+        )
         .expect("crc charlie");
 }

@@ -9,13 +9,13 @@ use crate::core::clock::{Clock, SystemClock};
 use crate::core::control::ControlFile;
 use crate::core::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, RECORD_ALIGN};
 use crate::core::mmap::MmapFile;
+use crate::core::seek_index::{SeekIndexBuilder, DEFAULT_INDEX_STRIDE_RECORDS};
 use crate::core::segment::{
     load_index, open_segment, prepare_or_open_segment, prepare_segment, prepare_segment_temp,
     publish_segment, read_segment_header, seal_segment, segment_path, segment_temp_path,
-    store_index, validate_segment_size, DEFAULT_SEGMENT_SIZE, SegmentIndex, SEG_DATA_OFFSET,
+    store_index, validate_segment_size, SegmentIndex, DEFAULT_SEGMENT_SIZE, SEG_DATA_OFFSET,
     SEG_FLAG_SEALED,
 };
-use crate::core::seek_index::{SeekIndexBuilder, DEFAULT_INDEX_STRIDE_RECORDS};
 use crate::core::wait::futex_wake;
 use crate::core::writer_lock;
 use crate::core::{Error, Result};
@@ -99,7 +99,10 @@ impl RetentionWorker {
 #[derive(Clone, Copy, Debug)]
 pub enum BackpressurePolicy {
     FailFast,
-    Block { timeout: Option<Duration>, poll_interval: Duration },
+    Block {
+        timeout: Option<Duration>,
+        poll_interval: Duration,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -142,7 +145,11 @@ impl Default for WriterConfig {
 }
 
 impl WriterConfig {
-    pub fn blocking(max_segments: Option<u64>, max_bytes: Option<u64>, timeout: Option<Duration>) -> Self {
+    pub fn blocking(
+        max_segments: Option<u64>,
+        max_bytes: Option<u64>,
+        timeout: Option<Duration>,
+    ) -> Self {
         Self {
             max_segments,
             max_bytes,
@@ -411,8 +418,7 @@ impl Queue {
             prepare_segment(&path, segment_id as u64, segment_size)?
         };
 
-        let (tail_offset, tail_partial) =
-            scan_segment_tail(&mmap, scan_offset, segment_size)?;
+        let (tail_offset, tail_partial) = scan_segment_tail(&mmap, scan_offset, segment_size)?;
         let mut write_offset = tail_offset as u64;
 
         if tail_partial {
@@ -634,15 +640,9 @@ impl<C: Clock> QueueWriter<C> {
             &[]
         };
         let checksum = MessageHeader::crc32(payload_buf);
-        let header = MessageHeader::new_uncommitted(
-            self.seq,
-            timestamp_ns,
-            type_id,
-            0,
-            checksum,
-        );
+        let header = MessageHeader::new_uncommitted(self.seq, timestamp_ns, type_id, 0, checksum);
         let header_bytes = header.to_bytes();
-        
+
         self.mmap
             .range_mut(offset, HEADER_SIZE)?
             .copy_from_slice(&header_bytes);
@@ -662,10 +662,8 @@ impl<C: Clock> QueueWriter<C> {
         self.control.set_write_offset(self.write_offset);
         self.control.set_writer_heartbeat_ns(now_ns()?);
 
-        self.control
-            .notify_seq()
-            .fetch_add(1, Ordering::SeqCst);
-        
+        self.control.notify_seq().fetch_add(1, Ordering::SeqCst);
+
         // Signal Suppression: Only syscall if someone is sleeping.
         if self.control.waiters_pending().load(Ordering::SeqCst) > 0 {
             futex_wake(self.control.notify_seq())?;
@@ -747,10 +745,7 @@ impl<C: Clock> QueueWriter<C> {
         let min_pos = self.min_reader_pos.load(Ordering::Relaxed);
         let (next_segment, next_offset) =
             if (self.write_offset as usize) + record_len > self.segment_size {
-                (
-                    head_segment + 1,
-                    SEG_DATA_OFFSET as u64 + record_len as u64,
-                )
+                (head_segment + 1, SEG_DATA_OFFSET as u64 + record_len as u64)
             } else {
                 (head_segment, head_offset + record_len as u64)
             };
@@ -848,10 +843,8 @@ impl<C: Clock> QueueWriter<C> {
         self.index_records_since_flush = 0;
         self.control.set_writer_heartbeat_ns(now_ns()?);
 
-        self.control
-            .notify_seq()
-            .fetch_add(1, Ordering::SeqCst);
-        
+        self.control.notify_seq().fetch_add(1, Ordering::SeqCst);
+
         // Signal Suppression: Only syscall if someone is sleeping.
         if self.control.waiters_pending().load(Ordering::SeqCst) > 0 {
             futex_wake(self.control.notify_seq())?;
@@ -993,17 +986,16 @@ fn repair_tail_and_roll(
     Ok(Some(next_segment))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::Queue;
     use crate::core::header::HEADER_SIZE;
-    use crate::core::segment::SEG_DATA_OFFSET;
-    use crate::core::segment::SEG_FLAG_SEALED;
     use crate::core::segment::create_segment;
     use crate::core::segment::open_segment;
     use crate::core::segment::read_segment_header;
     use crate::core::segment::segment_path;
+    use crate::core::segment::SEG_DATA_OFFSET;
+    use crate::core::segment::SEG_FLAG_SEALED;
     use crate::core::writer::WriterConfig;
     use crate::core::Error;
     use std::time::Duration;
@@ -1043,8 +1035,8 @@ mod tests {
             segment_size_bytes: 4096,
             ..WriterConfig::default()
         };
-        let mut writer = Queue::open_publisher_with_config(dir.path(), config)
-            .expect("open publisher");
+        let mut writer =
+            Queue::open_publisher_with_config(dir.path(), config).expect("open publisher");
 
         let current = writer.segment_id as u64;
         let stale_id = current + 2;
@@ -1085,8 +1077,8 @@ mod tests {
             .set_segment_index(next_segment, SEG_DATA_OFFSET as u64);
         drop(writer);
 
-        let writer = Queue::open_publisher_with_config(dir.path(), config)
-            .expect("reopen publisher");
+        let writer =
+            Queue::open_publisher_with_config(dir.path(), config).expect("reopen publisher");
         assert_eq!(writer.segment_id, next_segment);
 
         let old_mmap = open_segment(dir.path(), current_segment as u64, writer.segment_size)

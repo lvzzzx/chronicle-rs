@@ -45,14 +45,12 @@ impl FanInReader {
 
     pub fn wait(&mut self) -> Result<()> {
         match self.wait_strategy {
-            WaitStrategy::BusySpin => {
-                loop {
-                    if self.any_committed()? {
-                        return Ok(());
-                    }
-                    std::hint::spin_loop();
+            WaitStrategy::BusySpin => loop {
+                if self.any_committed()? {
+                    return Ok(());
                 }
-            }
+                std::hint::spin_loop();
+            },
             WaitStrategy::Sleep(duration) => {
                 if !self.any_committed()? {
                     std::thread::sleep(duration);
@@ -118,8 +116,8 @@ impl FanInReader {
         let message = self.pending[source]
             .take()
             .ok_or(Error::Corrupt("pending message missing"))?;
-        let payload = self.readers[source]
-            .payload_at(message.payload_offset, message.payload_len)?;
+        let payload =
+            self.readers[source].payload_at(message.payload_offset, message.payload_len)?;
         Ok(Some(MergedMessage {
             source,
             seq: message.seq,

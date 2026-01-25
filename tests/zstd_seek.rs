@@ -18,8 +18,7 @@ fn zstd_seek_index_roundtrip() {
     drop(input);
 
     let block_size = 64usize;
-    compress_q_to_zst(&input_path, &zst_path, &idx_path, block_size)
-        .expect("compress");
+    compress_q_to_zst(&input_path, &zst_path, &idx_path, block_size).expect("compress");
 
     let index = read_seek_index(&idx_path).expect("read index");
     let expected_entries = (data.len() + block_size - 1) / block_size;
@@ -27,12 +26,8 @@ fn zstd_seek_index_roundtrip() {
 
     let mut reader = ZstdBlockReader::open(&zst_path, &idx_path).expect("open reader");
     for offset in [0usize, 63, 64, 127, 255, 511] {
-        let entry = index
-            .entry_for_offset(offset as u64)
-            .expect("entry");
-        let block = reader
-            .read_block_at(offset as u64)
-            .expect("read block");
+        let entry = index.entry_for_offset(offset as u64).expect("entry");
+        let block = reader.read_block_at(offset as u64).expect("read block");
         let start = entry.uncompressed_offset as usize;
         let end = start + entry.uncompressed_size as usize;
         assert_eq!(&block[..], &data[start..end]);

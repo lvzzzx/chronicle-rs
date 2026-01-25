@@ -60,7 +60,9 @@ impl MmapFile {
     }
 
     pub fn range_mut(&mut self, offset: usize, len: usize) -> Result<&mut [u8]> {
-        let end = offset.checked_add(len).ok_or(Error::Corrupt("range overflow"))?;
+        let end = offset
+            .checked_add(len)
+            .ok_or(Error::Corrupt("range overflow"))?;
         if end > self.len {
             return Err(Error::Corrupt("range out of bounds"));
         }
@@ -68,7 +70,9 @@ impl MmapFile {
     }
 
     pub fn range(&self, offset: usize, len: usize) -> Result<&[u8]> {
-        let end = offset.checked_add(len).ok_or(Error::Corrupt("range overflow"))?;
+        let end = offset
+            .checked_add(len)
+            .ok_or(Error::Corrupt("range overflow"))?;
         if end > self.len {
             return Err(Error::Corrupt("range out of bounds"));
         }

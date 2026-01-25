@@ -1,6 +1,6 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
 use chronicle::etl::{Refinery, SymbolCatalog};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -73,8 +73,7 @@ fn main() -> Result<()> {
             catalog_refresh_secs,
         } => {
             println!("Refining {:?} -> {:?}", source, sink);
-            let catalog_path = catalog_delta
-                .unwrap_or_else(|| default_catalog_path());
+            let catalog_path = catalog_delta.unwrap_or_else(|| default_catalog_path());
             let catalog = SymbolCatalog::load_delta(&catalog_path)?;
             let catalog = Arc::new(RwLock::new(catalog));
 
@@ -112,5 +111,9 @@ fn main() -> Result<()> {
 
 fn default_catalog_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join("data").join("lake").join("silver").join("dim_symbol")
+    PathBuf::from(home)
+        .join("data")
+        .join("lake")
+        .join("silver")
+        .join("dim_symbol")
 }

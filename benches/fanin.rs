@@ -37,7 +37,7 @@ fn bench_fanin_throughput(c: &mut Criterion) {
 
             let payload = vec![0u8; MSG_SIZE];
             let barrier = Arc::new(Barrier::new(WRITERS + 1));
-            
+
             let total_msgs_to_read = TOTAL_MSGS as u64 * iters;
             let msgs_per_writer_iter = MSGS_PER_WRITER as u64 * iters;
 

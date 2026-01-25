@@ -73,9 +73,7 @@ pub fn lock_owner_alive(info: &WriterLockInfo) -> Result<bool> {
     }
     let proc_start = match proc_start_time(info.pid) {
         Ok(start) => start,
-        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(false)
-        }
+        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(err),
     };
     Ok(proc_start == info.start_time)
@@ -98,7 +96,9 @@ fn proc_start_time(pid: u32) -> Result<u64> {
     let path = format!("/proc/{pid}/stat");
     let mut contents = String::new();
     File::open(&path)?.read_to_string(&mut contents)?;
-    let end = contents.rfind(')').ok_or(Error::CorruptMetadata("stat parse"))?;
+    let end = contents
+        .rfind(')')
+        .ok_or(Error::CorruptMetadata("stat parse"))?;
     let after = &contents[end + 1..];
     let mut fields = after.split_whitespace();
     for _ in 0..19 {
@@ -119,21 +119,9 @@ fn read_lock_record(file: &File) -> Result<(u32, u64, u64)> {
     clone.seek(SeekFrom::Start(0))?;
     clone.read_to_string(&mut contents)?;
     let mut parts = contents.split_whitespace();
-    let pid = parts
-        .next()
-        .unwrap_or("0")
-        .parse::<u32>()
-        .unwrap_or(0);
-    let start_time = parts
-        .next()
-        .unwrap_or("0")
-        .parse::<u64>()
-        .unwrap_or(0);
-    let epoch = parts
-        .next()
-        .unwrap_or("0")
-        .parse::<u64>()
-        .unwrap_or(0);
+    let pid = parts.next().unwrap_or("0").parse::<u32>().unwrap_or(0);
+    let start_time = parts.next().unwrap_or("0").parse::<u64>().unwrap_or(0);
+    let epoch = parts.next().unwrap_or("0").parse::<u64>().unwrap_or(0);
     Ok((pid, start_time, epoch))
 }
 

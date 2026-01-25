@@ -1,9 +1,9 @@
-use anyhow::{anyhow, bail, Result};
 use crate::core::Queue;
 use crate::core::{MessageView, QueueReader, ReaderConfig, WaitStrategy};
 use crate::protocol::{
     BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId,
 };
+use anyhow::{anyhow, bail, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -32,7 +32,11 @@ impl ReplayEngine {
         })
     }
 
-    pub fn open_with_config(path: impl AsRef<Path>, reader: &str, config: ReaderConfig) -> Result<Self> {
+    pub fn open_with_config(
+        path: impl AsRef<Path>,
+        reader: &str,
+        config: ReaderConfig,
+    ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
         let reader = Queue::open_subscriber_with_config(&root, reader, config)?;
         Ok(Self {
@@ -109,7 +113,10 @@ impl ReplayEngine {
         self.reader.commit().map_err(|e| e.into())
     }
 
-    pub fn warm_start_from_snapshot_path(&mut self, path: impl AsRef<Path>) -> Result<snapshot::SnapshotHeader> {
+    pub fn warm_start_from_snapshot_path(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<snapshot::SnapshotHeader> {
         let (header, payload) = snapshot::load_snapshot(path.as_ref())?;
         self.apply_snapshot_payload(&header, &payload)?;
         self.last_seq = Some(header.seq_num);
@@ -178,7 +185,10 @@ impl ReplayEngine {
         payload: &[u8],
     ) -> Result<()> {
         if header.schema_version != snapshot::SNAPSHOT_VERSION {
-            bail!("unsupported snapshot schema version {}", header.schema_version);
+            bail!(
+                "unsupported snapshot schema version {}",
+                header.schema_version
+            );
         }
         if header.book_mode != BookMode::L2 as u16 {
             bail!("unsupported snapshot book mode {}", header.book_mode);
@@ -406,10 +416,7 @@ fn apply_message<'a>(
         }
     };
 
-    Ok(AppliedMessage {
-        update,
-        book_event,
-    })
+    Ok(AppliedMessage { update, book_event })
 }
 
 pub struct ReplayMessage<'a> {
@@ -427,8 +434,14 @@ pub struct BookEvent<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum BookEventPayload<'a> {
-    Snapshot { snapshot: L2Snapshot, levels: LevelsView<'a> },
-    Diff { diff: L2Diff, levels: LevelsView<'a> },
+    Snapshot {
+        snapshot: L2Snapshot,
+        levels: LevelsView<'a>,
+    },
+    Diff {
+        diff: L2Diff,
+        levels: LevelsView<'a>,
+    },
     Reset,
     Heartbeat,
     Unsupported,

@@ -188,5 +188,7 @@ fn parse_segment_id(name: &str) -> Option<u64> {
     if stem.is_empty() {
         return None;
     }
-    stem.parse::<u64>().map_err(|_| Error::Corrupt("invalid segment id")).ok()
+    stem.parse::<u64>()
+        .map_err(|_| Error::Corrupt("invalid segment id"))
+        .ok()
 }

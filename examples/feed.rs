@@ -2,8 +2,8 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chronicle::layout::IpcLayout;
 use chronicle::core::Queue;
+use chronicle::layout::IpcLayout;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();

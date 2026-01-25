@@ -2,6 +2,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub const ARCHIVE_VERSION: &str = "v1";
+const SEGMENT_WIDTH: usize = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutError {
@@ -77,6 +78,12 @@ impl StreamsLayout {
             .join("queue"))
     }
 
+    pub fn raw_queue_segment_path(&self, venue: &str, segment_id: u64) -> Result<PathBuf> {
+        Ok(self
+            .raw_queue_dir(venue)?
+            .join(segment_file_name(segment_id)))
+    }
+
     pub fn clean_queue_dir(&self, venue: &str, symbol: &str, stream: &str) -> Result<PathBuf> {
         validate_component("venue", venue)?;
         validate_component("symbol", symbol)?;
@@ -89,6 +96,18 @@ impl StreamsLayout {
             .join(symbol)
             .join(stream)
             .join("queue"))
+    }
+
+    pub fn clean_queue_segment_path(
+        &self,
+        venue: &str,
+        symbol: &str,
+        stream: &str,
+        segment_id: u64,
+    ) -> Result<PathBuf> {
+        Ok(self
+            .clean_queue_dir(venue, symbol, stream)?
+            .join(segment_file_name(segment_id)))
     }
 }
 
@@ -162,6 +181,160 @@ impl ArchiveLayout {
             .join(date)
             .join(stream))
     }
+
+    pub fn stream_meta_path(
+        &self,
+        venue: &str,
+        symbol: &str,
+        date: &str,
+        stream: &str,
+    ) -> Result<PathBuf> {
+        Ok(self
+            .stream_dir(venue, symbol, date, stream)?
+            .join("meta.json"))
+    }
+
+    pub fn stream_segment_path(
+        &self,
+        venue: &str,
+        symbol: &str,
+        date: &str,
+        stream: &str,
+        segment_id: u64,
+    ) -> Result<PathBuf> {
+        Ok(self
+            .stream_dir(venue, symbol, date, stream)?
+            .join(segment_file_name(segment_id)))
+    }
+
+    pub fn stream_compressed_segment_path(
+        &self,
+        venue: &str,
+        symbol: &str,
+        date: &str,
+        stream: &str,
+        segment_id: u64,
+    ) -> Result<PathBuf> {
+        Ok(self
+            .stream_dir(venue, symbol, date, stream)?
+            .join(compressed_segment_file_name(segment_id)))
+    }
+
+    pub fn stream_compressed_index_path(
+        &self,
+        venue: &str,
+        symbol: &str,
+        date: &str,
+        stream: &str,
+        segment_id: u64,
+    ) -> Result<PathBuf> {
+        Ok(self
+            .stream_dir(venue, symbol, date, stream)?
+            .join(compressed_index_file_name(segment_id)))
+    }
+
+    pub fn stream_remote_meta_path(
+        &self,
+        venue: &str,
+        symbol: &str,
+        date: &str,
+        stream: &str,
+        segment_id: u64,
+    ) -> Result<PathBuf> {
+        Ok(self
+            .stream_dir(venue, symbol, date, stream)?
+            .join(remote_meta_file_name(segment_id)))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RawArchiveLayout {
+    root: PathBuf,
+}
+
+impl RawArchiveLayout {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn raw_dir(&self, venue: &str, date: &str) -> Result<PathBuf> {
+        validate_component("venue", venue)?;
+        validate_date(date)?;
+        Ok(self
+            .root
+            .join("raw")
+            .join(ARCHIVE_VERSION)
+            .join(venue)
+            .join(date)
+            .join("raw"))
+    }
+
+    pub fn raw_meta_path(&self, venue: &str, date: &str) -> Result<PathBuf> {
+        Ok(self.raw_dir(venue, date)?.join("meta.json"))
+    }
+
+    pub fn raw_segment_path(&self, venue: &str, date: &str, segment_id: u64) -> Result<PathBuf> {
+        Ok(self
+            .raw_dir(venue, date)?
+            .join(segment_file_name(segment_id)))
+    }
+
+    pub fn raw_compressed_segment_path(
+        &self,
+        venue: &str,
+        date: &str,
+        segment_id: u64,
+    ) -> Result<PathBuf> {
+        Ok(self
+            .raw_dir(venue, date)?
+            .join(compressed_segment_file_name(segment_id)))
+    }
+
+    pub fn raw_compressed_index_path(
+        &self,
+        venue: &str,
+        date: &str,
+        segment_id: u64,
+    ) -> Result<PathBuf> {
+        Ok(self
+            .raw_dir(venue, date)?
+            .join(compressed_index_file_name(segment_id)))
+    }
+
+    pub fn raw_remote_meta_path(
+        &self,
+        venue: &str,
+        date: &str,
+        segment_id: u64,
+    ) -> Result<PathBuf> {
+        Ok(self
+            .raw_dir(venue, date)?
+            .join(remote_meta_file_name(segment_id)))
+    }
+}
+
+fn segment_file_name(segment_id: u64) -> String {
+    format!("{:0width$}.q", segment_id, width = SEGMENT_WIDTH)
+}
+
+fn compressed_segment_file_name(segment_id: u64) -> String {
+    format!("{:0width$}.q.zst", segment_id, width = SEGMENT_WIDTH)
+}
+
+fn compressed_index_file_name(segment_id: u64) -> String {
+    format!("{:0width$}.q.zst.idx", segment_id, width = SEGMENT_WIDTH)
+}
+
+fn remote_meta_file_name(segment_id: u64) -> String {
+    format!(
+        "{:0width$}.q.zst.remote.json",
+        segment_id,
+        width = SEGMENT_WIDTH
+    )
 }
 
 fn validate_component(field: &'static str, value: &str) -> Result<()> {
@@ -215,10 +388,7 @@ mod tests {
     #[test]
     fn ipc_raw_queue_path() {
         let layout = IpcLayout::new("/tmp/bus");
-        let path = layout
-            .streams()
-            .raw_queue_dir("binance")
-            .expect("raw path");
+        let path = layout.streams().raw_queue_dir("binance").expect("raw path");
         assert_eq!(path, PathBuf::from("/tmp/bus/streams/raw/binance/queue"));
     }
 
@@ -237,10 +407,7 @@ mod tests {
     #[test]
     fn reject_invalid_component() {
         let layout = IpcLayout::new("/tmp/bus");
-        let err = layout
-            .streams()
-            .raw_queue_dir("bad/venue")
-            .unwrap_err();
+        let err = layout.streams().raw_queue_dir("bad/venue").unwrap_err();
         assert!(matches!(err, LayoutError::InvalidComponent { .. }));
     }
 
@@ -266,6 +433,30 @@ mod tests {
         assert_eq!(
             endpoints.orders_in,
             PathBuf::from("/tmp/bus/orders/queue/alpha/orders_in")
+        );
+    }
+
+    #[test]
+    fn stream_segment_path() {
+        let layout = ArchiveLayout::new("/data/archive");
+        let path = layout
+            .stream_segment_path("binance", "btc-usdt", "2026-01-24", "trades", 42)
+            .expect("segment path");
+        assert_eq!(
+            path,
+            PathBuf::from("/data/archive/v1/binance/btc-usdt/2026-01-24/trades/000000042.q")
+        );
+    }
+
+    #[test]
+    fn raw_archive_segment_path() {
+        let layout = RawArchiveLayout::new("/data/archive");
+        let path = layout
+            .raw_segment_path("binance", "2026-01-24", 42)
+            .expect("raw segment path");
+        assert_eq!(
+            path,
+            PathBuf::from("/data/archive/raw/v1/binance/2026-01-24/raw/000000042.q")
         );
     }
 }

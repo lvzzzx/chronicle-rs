@@ -209,9 +209,7 @@ pub fn load_snapshot(path: &Path) -> Result<(SnapshotHeader, Vec<u8>)> {
         .checked_add(header.payload_len)
         .ok_or_else(|| anyhow!("snapshot length overflow"))?;
     if file_len != expected_len {
-        bail!(
-            "snapshot length mismatch: expected {expected_len} bytes, found {file_len} bytes"
-        );
+        bail!("snapshot length mismatch: expected {expected_len} bytes, found {file_len} bytes");
     }
     let mut payload = vec![0u8; header.payload_len as usize];
     if header.payload_len > 0 {
@@ -347,10 +345,7 @@ pub fn latest_snapshot_before_seq(dir: &Path, seq_num: u64) -> Result<Option<Sna
     Ok(best)
 }
 
-pub fn latest_snapshot_before_exchange_ts(
-    dir: &Path,
-    ts_ns: u64,
-) -> Result<Option<SnapshotInfo>> {
+pub fn latest_snapshot_before_exchange_ts(dir: &Path, ts_ns: u64) -> Result<Option<SnapshotInfo>> {
     let entries = load_snapshot_entries(dir)?;
     let mut best: Option<SnapshotInfo> = None;
     for entry in entries {
@@ -372,10 +367,7 @@ pub fn latest_snapshot_before_exchange_ts(
     Ok(best)
 }
 
-pub fn latest_snapshot_before_ingest_ts(
-    dir: &Path,
-    ts_ns: u64,
-) -> Result<Option<SnapshotInfo>> {
+pub fn latest_snapshot_before_ingest_ts(dir: &Path, ts_ns: u64) -> Result<Option<SnapshotInfo>> {
     let entries = load_snapshot_entries(dir)?;
     let mut best: Option<SnapshotInfo> = None;
     for entry in entries {
@@ -586,8 +578,7 @@ mod tests {
         }
 
         let snap_dir = writer.snapshot_dir(7, 11);
-        let latest = latest_snapshot_before_seq(&snap_dir, 25)?
-            .expect("expected snapshot");
+        let latest = latest_snapshot_before_seq(&snap_dir, 25)?.expect("expected snapshot");
         assert_eq!(latest.header.seq_num, 20);
         Ok(())
     }

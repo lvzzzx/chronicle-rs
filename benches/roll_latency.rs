@@ -26,7 +26,7 @@ fn bench_roll_latency(_c: &mut Criterion) {
 
     let mut writer = Queue::open_publisher_with_config(&path, config).expect("writer");
     let mut reader = Queue::open_subscriber(&path, "bench_reader").expect("reader");
-    
+
     // Use BusySpin to avoid futex wake/scheduling jitter during roll latency measurement.
     reader.set_wait_strategy(WaitStrategy::BusySpin);
     // Allow prealloc worker to start and prepare the next segment before the first roll.
@@ -61,13 +61,13 @@ fn bench_roll_latency(_c: &mut Criterion) {
         loop {
             if let Some(msg) = reader.next().unwrap() {
                 let recv_time = bench_start.elapsed().as_nanos();
-                
+
                 let mut ts_buf = [0u8; 16];
                 ts_buf.copy_from_slice(&msg.payload[0..16]);
                 let send_ts = u128::from_le_bytes(ts_buf);
 
                 let latency = recv_time.saturating_sub(send_ts);
-                
+
                 if rolled {
                     // Tag roll latencies specifically
                     latencies.push((latency, true));
@@ -84,17 +84,31 @@ fn bench_roll_latency(_c: &mut Criterion) {
         }
     }
 
-    let mut steady_latencies: Vec<u128> = latencies.iter().filter(|&&(_, r)| !r).map(|&(l, _)| l).collect();
-    let mut roll_latencies: Vec<u128> = latencies.iter().filter(|&&(_, r)| r).map(|&(l, _)| l).collect();
+    let mut steady_latencies: Vec<u128> = latencies
+        .iter()
+        .filter(|&&(_, r)| !r)
+        .map(|&(l, _)| l)
+        .collect();
+    let mut roll_latencies: Vec<u128> = latencies
+        .iter()
+        .filter(|&&(_, r)| r)
+        .map(|&(l, _)| l)
+        .collect();
 
     steady_latencies.sort_unstable();
     roll_latencies.sort_unstable();
 
     println!("\nSteady State Latency (ns):");
     println!("  P50:  {}", steady_latencies[steady_latencies.len() / 2]);
-    println!("  P99:  {}", steady_latencies[(steady_latencies.len() as f64 * 0.99) as usize]);
+    println!(
+        "  P99:  {}",
+        steady_latencies[(steady_latencies.len() as f64 * 0.99) as usize]
+    );
 
-    println!("\nRoll Event Latency (ns) [{} events]:", roll_latencies.len());
+    println!(
+        "\nRoll Event Latency (ns) [{} events]:",
+        roll_latencies.len()
+    );
     if !roll_latencies.is_empty() {
         println!("  Min:  {}", roll_latencies[0]);
         println!("  P50:  {}", roll_latencies[roll_latencies.len() / 2]);

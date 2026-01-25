@@ -134,8 +134,9 @@ To make replay deterministic and lossless, the incremental order book protocol m
 #[repr(C)]
 pub struct BookEventHeader {
     pub schema_version: u16,
-    pub record_len: u16,       // bytes including header + payload
+    pub record_len: u32,       // bytes including header + payload
     pub endianness: u8,        // 0 = LE, 1 = BE
+    pub _pad0: u8,             // align
     pub venue_id: u16,         // stable numeric ID
     pub market_id: u32,        // stable numeric ID for symbol/venue
     pub stream_id: u32,        // optional: per-connection stream
@@ -146,6 +147,7 @@ pub struct BookEventHeader {
     pub event_type: u8,        // Snapshot/Diff/Reset/Heartbeat
     pub book_mode: u8,         // 0 = L2, 1 = L3
     pub flags: u16,            // future use, alignment
+    pub _pad1: u32,            // align to 8 (header size = 64)
 }
 ```
 
@@ -153,6 +155,7 @@ pub struct BookEventHeader {
 - `seq` is the strict replay ordering key when populated; if set to 0, use `MessageHeader.seq` as canonical.
 - `native_seq` preserves venue ordering semantics for validation.
 - All fixed-point numbers below must include an implied scale (per stream or per event).
+- `schema_version = 2` indicates `record_len` is a `u32` and the header size is 64 bytes.
 
 ### 4.2 L2 Diff Payload (Price-Level Updates)
 
@@ -262,8 +265,8 @@ Offset  Size  Field
 ```
 Record
   [0x0000..0x003F]  MessageHeader (64 bytes, from chronicle::core)
-  [0x0040..0x0077]  BookEventHeader (56 bytes, includes trailing pad)
-  [0x0078..]        Payload (record_len - 56 bytes)
+  [0x0040..0x007F]  BookEventHeader (64 bytes, includes trailing pad)
+  [0x0080..]        Payload (record_len - 64 bytes)
 ```
 
 MessageHeader (64 bytes, little-endian, from `chronicle::core`):
@@ -282,25 +285,27 @@ Offset  Size  Field
 
 **Note:** `type_id` should come from a shared enum in `chronicle::protocol` (e.g., `TypeId::BookEvent`) rather than ad-hoc values per writer. Reserve `PAD_TYPE_ID = 0xFFFF` for padding.
 
-BookEventHeader (56 bytes, little-endian, payload prefix):
+BookEventHeader (64 bytes, little-endian, payload prefix):
 
 ```
 Offset  Size  Field
 0x0000  2     schema_version
-0x0002  2     record_len
-0x0004  1     endianness (0=LE, 1=BE)
-0x0005  1     pad0
-0x0006  2     venue_id
-0x0008  4     market_id
-0x000C  4     stream_id
-0x0010  8     ingest_ts_ns
-0x0018  8     exchange_ts_ns
-0x0020  8     seq
-0x0028  8     native_seq
-0x0030  1     event_type
-0x0031  1     book_mode
-0x0032  2     flags
-0x0034  4     pad1 (align to 8, total header = 56)
+0x0002  2     pad (align record_len)
+0x0004  4     record_len
+0x0008  1     endianness (0=LE, 1=BE)
+0x0009  1     pad0
+0x000A  2     venue_id
+0x000C  4     market_id
+0x0010  4     stream_id
+0x0014  4     pad (align ingest_ts_ns)
+0x0018  8     ingest_ts_ns
+0x0020  8     exchange_ts_ns
+0x0028  8     seq
+0x0030  8     native_seq
+0x0038  1     event_type
+0x0039  1     book_mode
+0x003A  2     flags
+0x003C  4     pad1 (align to 8, total header = 64)
 ```
 
 #### 4.5.4 L2 Diff Payload Layout (Example)
@@ -335,8 +340,8 @@ Offset  Size  Field
 
 **Notes:**
 - `price_scale`/`size_scale` are per-event to preserve exact decimal precision.
-- `record_len` in `BookEventHeader` must match `56 + payload_len`.
-- `commit_len` in `MessageHeader` must match `record_len + 1`.
+- `record_len` in `BookEventHeader` must match `64 + payload_len`.
+- `commit_len` in `MessageHeader` must match `payload_len + 1`.
 
 ### 4.6 Ingest Adapter: Tardis CSV incremental_book_L2 (Absolute)
 

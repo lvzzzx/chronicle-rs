@@ -3,11 +3,11 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::core::control::ControlFile;
-use crate::core::header::{
-    MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, PAD_TYPE_ID, RECORD_ALIGN,
-};
+use crate::core::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, PAD_TYPE_ID, RECORD_ALIGN};
 use crate::core::mmap::MmapFile;
-use crate::core::seek_index::{load_index_entries, load_index_header, SeekIndexEntry, SeekIndexHeader};
+use crate::core::seek_index::{
+    load_index_entries, load_index_header, SeekIndexEntry, SeekIndexHeader,
+};
 use crate::core::segment::{
     load_reader_meta, open_segment, read_segment_header, segment_path, store_reader_meta,
     validate_segment_size, ReaderMeta, SEG_DATA_OFFSET, SEG_FLAG_SEALED,
@@ -144,9 +144,7 @@ impl Queue {
         let control_path = path.join("control.meta");
         let control = match ControlFile::open(&control_path) {
             Ok(control) => control,
-            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(None)
-            }
+            Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err),
         };
         if !control.check_ready()? {
@@ -236,7 +234,7 @@ impl Queue {
     }
 }
 
-    fn find_oldest_segment(path: &std::path::Path) -> Result<u64> {
+fn find_oldest_segment(path: &std::path::Path) -> Result<u64> {
     let mut min_id = None;
     for entry in std::fs::read_dir(path).map_err(Error::Io)? {
         let entry = entry.map_err(Error::Io)?;
@@ -337,8 +335,8 @@ impl QueueReader {
                 return Ok(());
             }
             WaitStrategy::SpinThenPark { spin_us } => {
-                let spin_deadline = std::time::Instant::now()
-                    + Duration::from_micros(spin_us as u64);
+                let spin_deadline =
+                    std::time::Instant::now() + Duration::from_micros(spin_us as u64);
                 let mut i = 0;
                 loop {
                     if self.peek_committed()? {
@@ -358,7 +356,9 @@ impl QueueReader {
 
         // Signal Suppression Protocol:
         // 1. Register presence (SeqCst to ensure visibility before check)
-        self.control.waiters_pending().fetch_add(1, Ordering::SeqCst);
+        self.control
+            .waiters_pending()
+            .fetch_add(1, Ordering::SeqCst);
 
         // 2. Load seq before the check-after-set to avoid missing a wake.
         let seq = self.control.notify_seq().load(Ordering::Acquire);
@@ -366,7 +366,9 @@ impl QueueReader {
         // 3. Double-check for data (Check-After-Set).
         // This handles the race where Writer wrote *just* before we incremented.
         if self.peek_committed()? {
-            self.control.waiters_pending().fetch_sub(1, Ordering::SeqCst);
+            self.control
+                .waiters_pending()
+                .fetch_sub(1, Ordering::SeqCst);
             return Ok(());
         }
 
@@ -375,7 +377,9 @@ impl QueueReader {
         let res = futex_wait(self.control.notify_seq(), seq, timeout);
 
         // 5. Deregister
-        self.control.waiters_pending().fetch_sub(1, Ordering::SeqCst);
+        self.control
+            .waiters_pending()
+            .fetch_sub(1, Ordering::SeqCst);
 
         res
     }
@@ -504,7 +508,7 @@ impl QueueReader {
         let header = read_segment_header(&self.mmap)?;
         let next_segment = self.segment_id + 1;
         let next_path = segment_path(&self.path, next_segment as u64);
-        
+
         // We still check exists() or try_open because current_segment is a "hint" (Relaxed).
         // However, we only pay this cost if the hint suggests we should.
         if !next_path.exists() {

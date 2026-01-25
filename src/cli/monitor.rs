@@ -7,7 +7,9 @@ use crate::core::{Clock, QuantaClock, QueueReader, StartMode};
 use clap::Args;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use hdrhistogram::Histogram;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -41,7 +43,10 @@ pub fn run(args: MonitorArgs) -> Result<(), Box<dyn std::error::Error>> {
     res
 }
 
-fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn run_monitor<B: Backend>(
+    terminal: &mut Terminal<B>,
+    args: MonitorArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
     // We need to manage the connection state
     let mut reader: Option<QueueReader> = None;
     let connect_interval = Duration::from_millis(500);
@@ -120,13 +125,13 @@ fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Res
             // Commit progress after the burst
             if !should_disconnect {
                 if let Err(e) = r.commit() {
-                     connection_status = format!("Error committing offset: {}", e);
-                     // Failure to commit usually implies FS issues, maybe should detach?
-                     // For now, we log it in status but keep reading.
+                    connection_status = format!("Error committing offset: {}", e);
+                    // Failure to commit usually implies FS issues, maybe should detach?
+                    // For now, we log it in status but keep reading.
                 }
             }
         }
-        
+
         if should_disconnect {
             reader = None;
         }
@@ -139,9 +144,9 @@ fn run_monitor<B: Backend>(terminal: &mut Terminal<B>, args: MonitorArgs) -> Res
             } else {
                 0.0
             };
-            
+
             let last_stats = if reader.is_some() {
-                 LatencyStats {
+                LatencyStats {
                     p50: histogram.value_at_quantile(0.5),
                     p99: histogram.value_at_quantile(0.99),
                     p999: histogram.value_at_quantile(0.999),
@@ -193,21 +198,25 @@ struct LatencyStats {
 fn ui(f: &mut Frame, args: &MonitorArgs, stats: &LatencyStats) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(f.size());
 
-    let title_color = if stats.connected { Color::Green } else { Color::Yellow };
-    let title = Paragraph::new(format!("Chronicle Monitor: {}", args.path.display()))
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(title_color)));
+    let title_color = if stats.connected {
+        Color::Green
+    } else {
+        Color::Yellow
+    };
+    let title = Paragraph::new(format!("Chronicle Monitor: {}", args.path.display())).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(title_color)),
+    );
     f.render_widget(title, chunks[0]);
 
     if !stats.connected {
         let status = Paragraph::new(format!("Status: {}", stats.status))
-             .style(Style::default().fg(Color::Yellow))
-             .block(Block::default().title("Status").borders(Borders::ALL));
+            .style(Style::default().fg(Color::Yellow))
+            .block(Block::default().title("Status").borders(Borders::ALL));
         f.render_widget(status, chunks[1]);
         return;
     }
@@ -219,12 +228,13 @@ fn ui(f: &mut Frame, args: &MonitorArgs, stats: &LatencyStats) {
         ]),
         Line::from(vec![
             Span::raw("Rate:   "),
-            Span::styled(format!("{:.0} msg/s", stats.rate), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{:.0} msg/s", stats.rate),
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::raw("Latencies (ns):"),
-        ]),
+        Line::from(vec![Span::raw("Latencies (ns):")]),
         Line::from(vec![
             Span::raw("  p50:   "),
             Span::styled(format!("{}", stats.p50), Style::default().fg(Color::Green)),
@@ -239,7 +249,10 @@ fn ui(f: &mut Frame, args: &MonitorArgs, stats: &LatencyStats) {
         ]),
         Line::from(vec![
             Span::raw("  Max:   "),
-            Span::styled(format!("{}", stats.max), Style::default().fg(Color::Magenta)),
+            Span::styled(
+                format!("{}", stats.max),
+                Style::default().fg(Color::Magenta),
+            ),
         ]),
     ];
 

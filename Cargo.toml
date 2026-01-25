@@ -15,9 +15,12 @@ clap = { version = "4.5.54", features = ["derive"] }
 core_affinity = "0.8"
 crc32fast = "1"
 crossterm = "0.29.0"
+csv = "1.3"
 env_logger = "0.10"
+flate2 = "1"
 futures-util = "0.3"
 hdrhistogram = "7.5.4"
+blake3 = "1"
 libc = "0.2"
 log = "0.4"
 memmap2 = "0.9"
@@ -31,6 +34,7 @@ simd-json = "0.13"
 thiserror = "1"
 tokio = { version = "1.28", features = ["full"] }
 tokio-tungstenite = { version = "0.20", features = ["rustls-tls-native-roots"] }
+time = "0.3"
 url = "2.4"
 zstd = "0.13"
 
@@ -89,3 +93,11 @@ path = "src/bin/snapshotter.rs"
 [[bin]]
 name = "tier"
 path = "src/bin/tier.rs"
+
+[[bin]]
+name = "chronicle-raw-archiver"
+path = "src/bin/chronicle_raw_archiver.rs"
+
+[[bin]]
+name = "chronicle-csv-import"
+path = "src/bin/chronicle_csv_import.rs"

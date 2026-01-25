@@ -1,13 +1,13 @@
+mod catalog;
 mod extractor;
 mod feature;
 mod features;
-mod catalog;
 mod refinery;
 mod sink;
 mod triggers;
 
-pub use extractor::{Extractor, ExtractorStats};
 pub use catalog::{SymbolCatalog, SymbolIdentity};
+pub use extractor::{Extractor, ExtractorStats};
 pub use feature::{
     AlwaysEmit, ColumnSpec, Feature, FeatureGraph, FeatureSet, RowBuffer, RowWriter, Trigger,
 };

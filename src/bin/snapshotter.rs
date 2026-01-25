@@ -25,7 +25,8 @@ fn main() -> Result<()> {
         memlock: false,
         start_mode: config.start_mode,
     };
-    let mut engine = ReplayEngine::open_with_config(&config.archive_path, "snapshotter", reader_config)?;
+    let mut engine =
+        ReplayEngine::open_with_config(&config.archive_path, "snapshotter", reader_config)?;
 
     let policy = SnapshotPolicy {
         min_interval: config.min_interval,
@@ -265,9 +266,8 @@ fn build_snapshot_payload(book: &chronicle::replay::L2Book) -> (L2Snapshot, Vec<
     };
 
     let total_levels = bids.len() + asks.len();
-    let mut payload = Vec::with_capacity(
-        size_of::<L2Snapshot>() + total_levels * size_of::<PriceLevelUpdate>(),
-    );
+    let mut payload =
+        Vec::with_capacity(size_of::<L2Snapshot>() + total_levels * size_of::<PriceLevelUpdate>());
 
     let snapshot_bytes = unsafe {
         std::slice::from_raw_parts(
@@ -298,7 +298,9 @@ fn build_snapshot_payload(book: &chronicle::replay::L2Book) -> (L2Snapshot, Vec<
 
 fn print_usage() {
     eprintln!("Usage: snapshotter --archive <path> --venue <id> --market <id> [options]");
-    eprintln!("  --start <mode>        resume-strict|resume-snapshot|resume-latest|latest|earliest");
+    eprintln!(
+        "  --start <mode>        resume-strict|resume-snapshot|resume-latest|latest|earliest"
+    );
     eprintln!("  --interval <secs>     minimum seconds between snapshots (default: 10)");
     eprintln!("  --records <count>     minimum records between snapshots");
     eprintln!("  --bytes <count>       minimum bytes between snapshots");

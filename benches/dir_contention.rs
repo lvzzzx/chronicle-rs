@@ -14,8 +14,7 @@ fn main() {
     let path = dir.path().join("bench_queue");
 
     let segment_size = 4096_u64;
-    let payload_len = (segment_size as usize)
-        .saturating_sub(SEG_DATA_OFFSET + HEADER_SIZE)
+    let payload_len = (segment_size as usize).saturating_sub(SEG_DATA_OFFSET + HEADER_SIZE)
         / RECORD_ALIGN
         * RECORD_ALIGN;
     let config = WriterConfig {

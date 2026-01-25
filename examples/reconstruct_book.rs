@@ -1,6 +1,8 @@
 use anyhow::Result;
 use chronicle::core::Queue;
-use chronicle::protocol::{BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId};
+use chronicle::protocol::{
+    BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId,
+};
 use clap::Parser;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,18 +27,36 @@ impl OrderBook {
         }
     }
 
-    fn apply_snapshot(&mut self, bids: &[PriceLevelUpdate], asks: &[PriceLevelUpdate], price_scale: u8, size_scale: u8) {
+    fn apply_snapshot(
+        &mut self,
+        bids: &[PriceLevelUpdate],
+        asks: &[PriceLevelUpdate],
+        price_scale: u8,
+        size_scale: u8,
+    ) {
         self.bids.clear();
         self.asks.clear();
         for p in bids {
-            self.bids.insert(to_ordered(to_f64(p.price, price_scale)), to_f64(p.size, size_scale));
+            self.bids.insert(
+                to_ordered(to_f64(p.price, price_scale)),
+                to_f64(p.size, size_scale),
+            );
         }
         for p in asks {
-            self.asks.insert(to_ordered(to_f64(p.price, price_scale)), to_f64(p.size, size_scale));
+            self.asks.insert(
+                to_ordered(to_f64(p.price, price_scale)),
+                to_f64(p.size, size_scale),
+            );
         }
     }
 
-    fn apply_update(&mut self, bids: &[PriceLevelUpdate], asks: &[PriceLevelUpdate], price_scale: u8, size_scale: u8) {
+    fn apply_update(
+        &mut self,
+        bids: &[PriceLevelUpdate],
+        asks: &[PriceLevelUpdate],
+        price_scale: u8,
+        size_scale: u8,
+    ) {
         for p in bids {
             let price = to_f64(p.price, price_scale);
             let qty = to_f64(p.size, size_scale);
@@ -108,7 +128,7 @@ fn main() -> Result<()> {
 
                 // Safety: We assume the producer follows the schema.
                 // In prod, you'd validate bounds.
-                
+
                 if type_id == TypeId::BookEvent.as_u16() {
                     unsafe {
                         // 1. Read Header
@@ -138,7 +158,8 @@ fn main() -> Result<()> {
                                 if payload.len() < offset + levels_size {
                                     continue;
                                 }
-                                let levels_ptr = payload.as_ptr().add(offset) as *const PriceLevelUpdate;
+                                let levels_ptr =
+                                    payload.as_ptr().add(offset) as *const PriceLevelUpdate;
                                 let levels = std::slice::from_raw_parts(levels_ptr, total);
                                 let (bids, asks) = levels.split_at(snap.bid_count as usize);
 
@@ -159,12 +180,18 @@ fn main() -> Result<()> {
                                 if payload.len() < offset + levels_size {
                                     continue;
                                 }
-                                let levels_ptr = payload.as_ptr().add(offset) as *const PriceLevelUpdate;
+                                let levels_ptr =
+                                    payload.as_ptr().add(offset) as *const PriceLevelUpdate;
                                 let levels = std::slice::from_raw_parts(levels_ptr, total);
                                 let (bids, asks) = levels.split_at(diff.bid_count as usize);
 
                                 if initialized {
-                                    book.apply_update(bids, asks, diff.price_scale, diff.size_scale);
+                                    book.apply_update(
+                                        bids,
+                                        asks,
+                                        diff.price_scale,
+                                        diff.size_scale,
+                                    );
                                 }
                             }
                             _ => {}

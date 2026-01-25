@@ -37,7 +37,11 @@ async fn main() -> Result<()> {
             info!("Pinning process to core {}", core_id);
             core_affinity::set_for_current(core_ids[core_id]);
         } else {
-            anyhow::bail!("Core ID {} out of range ({} cores available)", core_id, core_ids.len());
+            anyhow::bail!(
+                "Core ID {} out of range ({} cores available)",
+                core_id,
+                core_ids.len()
+            );
         }
     }
 
@@ -59,7 +63,9 @@ async fn main() -> Result<()> {
     let mut writer = Queue::open_publisher_with_config(&queue_path, config)
         .context("Failed to open queue writer")?;
 
-    let symbols: Vec<String> = args.symbols.split(',')
+    let symbols: Vec<String> = args
+        .symbols
+        .split(',')
         .map(|s| s.trim().to_string())
         .collect();
 

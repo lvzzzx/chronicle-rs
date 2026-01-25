@@ -2,10 +2,10 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
 use crate::core::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, PAD_TYPE_ID, RECORD_ALIGN};
 use crate::core::segment::{SEG_DATA_OFFSET, SEG_MAGIC, SEG_VERSION};
 use crate::core::zstd_seek::{read_seek_index, ZstdSeekIndex};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
 use super::resolver::{ResolvedStorage, StorageResolver, StorageTier};
@@ -36,7 +36,11 @@ impl StorageReader {
                 let source = SegmentSource::Plain(PlainSegmentSource { file, len });
                 build_reader(tier, source, &path)
             }
-            ResolvedStorage::Zstd { tier, path, idx_path } => {
+            ResolvedStorage::Zstd {
+                tier,
+                path,
+                idx_path,
+            } => {
                 let (source, len) = ZstdSegmentSource::open(&path, &idx_path)?;
                 let source = SegmentSource::Zstd(source);
                 build_reader(tier, source, &path).map(|mut reader| {
@@ -45,8 +49,7 @@ impl StorageReader {
                 })
             }
             ResolvedStorage::RemoteStub { stub_path } => {
-                let (zst_path, idx_path) =
-                    cache_remote_segment(&stub_path, resolver.cache_root())?;
+                let (zst_path, idx_path) = cache_remote_segment(&stub_path, resolver.cache_root())?;
                 let (source, len) = ZstdSegmentSource::open(&zst_path, &idx_path)?;
                 let source = SegmentSource::Zstd(source);
                 build_reader(StorageTier::RemoteCold, source, &zst_path).map(|mut reader| {
@@ -54,6 +57,32 @@ impl StorageReader {
                     reader
                 })
             }
+        }
+    }
+
+    pub fn open_segment(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if !path.is_file() {
+            bail!("segment path is not a file: {}", path.display());
+        }
+        let path_str = path.to_string_lossy();
+        if path_str.ends_with(".q.zst") {
+            let idx_path = PathBuf::from(format!("{path_str}.idx"));
+            if !idx_path.is_file() {
+                bail!("missing zstd index: {}", idx_path.display());
+            }
+            let (source, len) = ZstdSegmentSource::open(path, &idx_path)?;
+            let source = SegmentSource::Zstd(source);
+            build_reader(StorageTier::Cold, source, path).map(|mut reader| {
+                reader.len = len;
+                reader
+            })
+        } else {
+            let file =
+                File::open(path).with_context(|| format!("open segment {}", path.display()))?;
+            let len = file.metadata()?.len();
+            let source = SegmentSource::Plain(PlainSegmentSource { file, len });
+            build_reader(StorageTier::Hot, source, path)
         }
     }
 
@@ -108,7 +137,8 @@ impl StorageReader {
         }
 
         self.source.read_exact_at(offset, &mut self.header_buf)?;
-        let commit_len = u32::from_le_bytes(self.header_buf[0..4].try_into().expect("slice length"));
+        let commit_len =
+            u32::from_le_bytes(self.header_buf[0..4].try_into().expect("slice length"));
         if commit_len == 0 {
             return Ok(None);
         }
@@ -120,7 +150,7 @@ impl StorageReader {
         }
 
         let header = MessageHeader::from_bytes(&self.header_buf)?;
-        
+
         let end = offset
             .saturating_add(HEADER_SIZE as u64)
             .saturating_add(payload_len as u64);
@@ -132,7 +162,11 @@ impl StorageReader {
     }
 }
 
-fn build_reader(tier: StorageTier, mut source: SegmentSource, path: &Path) -> Result<StorageReader> {
+fn build_reader(
+    tier: StorageTier,
+    mut source: SegmentSource,
+    path: &Path,
+) -> Result<StorageReader> {
     validate_segment(&mut source, path)?;
     let len = source.len();
     Ok(StorageReader {
@@ -246,9 +280,8 @@ impl ZstdSegmentSource {
                 bail!("read beyond cached block");
             }
             let to_copy = available.min(buf.len());
-            buf[..to_copy].copy_from_slice(
-                &self.cached_block[block_offset..block_offset + to_copy],
-            );
+            buf[..to_copy]
+                .copy_from_slice(&self.cached_block[block_offset..block_offset + to_copy]);
             offset = offset.saturating_add(to_copy as u64);
             buf = &mut buf[to_copy..];
         }
@@ -273,8 +306,8 @@ impl ZstdSegmentSource {
         let mut compressed = vec![0u8; entry.compressed_size as usize];
         self.file.seek(SeekFrom::Start(entry.compressed_offset))?;
         self.file.read_exact(&mut compressed)?;
-        let decompressed = zstd::stream::decode_all(&compressed[..])
-            .context("decompress zstd block")?;
+        let decompressed =
+            zstd::stream::decode_all(&compressed[..]).context("decompress zstd block")?;
         if decompressed.len() != entry.uncompressed_size as usize {
             bail!(
                 "decompressed size mismatch: expected {} got {}",

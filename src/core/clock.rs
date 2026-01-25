@@ -44,7 +44,7 @@ impl Default for QuantaClock {
             .duration_since(UNIX_EPOCH)
             .expect("system time before UNIX epoch")
             .as_nanos() as u64;
-        
+
         Self {
             clock,
             start_wall_ns,

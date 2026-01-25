@@ -1,6 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -46,7 +46,7 @@ pub mod book_flags {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BookEventHeader {
     pub schema_version: u16,
-    pub record_len: u16,
+    pub record_len: u32,
     pub endianness: u8,
     pub _pad0: u8,
     pub venue_id: u16,
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn book_event_header_size() {
-        assert_eq!(size_of::<BookEventHeader>(), 56);
+        assert_eq!(size_of::<BookEventHeader>(), 64);
         assert_eq!(align_of::<BookEventHeader>(), 8);
     }
 
