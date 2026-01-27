@@ -1,4 +1,4 @@
-use crate::replay::{BookEventPayload, ReplayEngine};
+use crate::stream::replay::{BookEventPayload, LiveReplayEngine};
 use anyhow::Result;
 
 use super::feature::{FeatureSet, RowBuffer, RowWriter};
@@ -14,7 +14,7 @@ pub struct ExtractorStats {
 }
 
 pub struct Extractor<F, S> {
-    engine: ReplayEngine,
+    engine: LiveReplayEngine,
     features: F,
     buffer: RowBuffer,
     sink: S,
@@ -26,7 +26,7 @@ where
     F: FeatureSet,
     S: RowSink,
 {
-    pub fn new(engine: ReplayEngine, features: F, buffer: RowBuffer, sink: S) -> Self {
+    pub fn new(engine: LiveReplayEngine, features: F, buffer: RowBuffer, sink: S) -> Self {
         Self {
             engine,
             features,
@@ -36,7 +36,7 @@ where
         }
     }
 
-    pub fn engine_mut(&mut self) -> &mut ReplayEngine {
+    pub fn engine_mut(&mut self) -> &mut LiveReplayEngine {
         &mut self.engine
     }
 

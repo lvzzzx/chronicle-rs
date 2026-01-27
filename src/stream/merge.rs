@@ -1,6 +1,10 @@
-use crate::core::reader::{MessageRef, QueueReader, WaitStrategy};
-use crate::core::{Error, Result};
 use std::time::{Duration, Instant};
+
+use crate::core::{Error, Result as CoreResult, WaitStrategy};
+use crate::core::reader::{MessageRef, QueueReader};
+use anyhow::Result;
+
+use super::{OwnedStreamReader, StreamMessageOwned};
 
 pub struct MergedMessage<'a> {
     pub source: usize,
@@ -43,7 +47,7 @@ impl FanInReader {
         self.wait_strategy = strategy;
     }
 
-    pub fn wait(&mut self) -> Result<()> {
+    pub fn wait(&mut self) -> CoreResult<()> {
         match self.wait_strategy {
             WaitStrategy::BusySpin => loop {
                 if self.any_committed()? {
@@ -67,14 +71,13 @@ impl FanInReader {
                 }
                 // Degraded Mode: We cannot park on N futexes without eventfd.
                 // Fallback to a short sleep (100us) to avoid 100% CPU burn.
-                // This is a trade-off: Saves CPU but adds latency floor.
                 std::thread::sleep(Duration::from_micros(100));
                 Ok(())
             }
         }
     }
 
-    fn any_committed(&self) -> Result<bool> {
+    fn any_committed(&self) -> CoreResult<bool> {
         for reader in &self.readers {
             if reader.peek_committed()? {
                 return Ok(true);
@@ -83,7 +86,7 @@ impl FanInReader {
         Ok(false)
     }
 
-    pub fn next(&mut self) -> Result<Option<MergedMessage<'_>>> {
+    pub fn next(&mut self) -> CoreResult<Option<MergedMessage<'_>>> {
         for (index, reader) in self.readers.iter_mut().enumerate() {
             if self.pending[index].is_none() {
                 if let Some(message) = reader.next_ref()? {
@@ -127,7 +130,7 @@ impl FanInReader {
         }))
     }
 
-    pub fn commit(&mut self, source: usize) -> Result<()> {
+    pub fn commit(&mut self, source: usize) -> CoreResult<()> {
         let reader = self
             .readers
             .get_mut(source)
@@ -145,5 +148,77 @@ impl PendingMessage {
             payload_offset: message.payload_offset,
             payload_len: message.payload_len,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnedMergedMessage {
+    pub source: usize,
+    pub seq: u64,
+    pub timestamp_ns: u64,
+    pub type_id: u16,
+    pub payload: Vec<u8>,
+}
+
+pub struct OwnedFanInReader {
+    readers: Vec<Box<dyn OwnedStreamReader>>,
+    pending: Vec<Option<StreamMessageOwned>>,
+}
+
+impl OwnedFanInReader {
+    pub fn new(readers: Vec<Box<dyn OwnedStreamReader>>) -> Self {
+        let pending = readers.iter().map(|_| None).collect();
+        Self { readers, pending }
+    }
+
+    pub fn next(&mut self) -> Result<Option<OwnedMergedMessage>> {
+        for (index, reader) in self.readers.iter_mut().enumerate() {
+            if self.pending[index].is_none() {
+                if let Some(message) = reader.next_owned()? {
+                    self.pending[index] = Some(message);
+                }
+            }
+        }
+
+        let mut best: Option<(usize, u64)> = None;
+        for (index, pending) in self.pending.iter().enumerate() {
+            let Some(message) = pending.as_ref() else {
+                continue;
+            };
+            let timestamp = message.timestamp_ns;
+            match best {
+                None => best = Some((index, timestamp)),
+                Some((best_index, best_timestamp)) => {
+                    if timestamp < best_timestamp
+                        || (timestamp == best_timestamp && index < best_index)
+                    {
+                        best = Some((index, timestamp));
+                    }
+                }
+            }
+        }
+
+        let Some((source, _)) = best else {
+            return Ok(None);
+        };
+
+        let message = self.pending[source]
+            .take()
+            .ok_or(Error::Corrupt("pending message missing"))?;
+        Ok(Some(OwnedMergedMessage {
+            source,
+            seq: message.seq,
+            timestamp_ns: message.timestamp_ns,
+            type_id: message.type_id,
+            payload: message.payload,
+        }))
+    }
+
+    pub fn commit(&mut self, source: usize) -> Result<()> {
+        let reader = self
+            .readers
+            .get_mut(source)
+            .ok_or(Error::Unsupported("invalid fan-in source"))?;
+        reader.commit()
     }
 }

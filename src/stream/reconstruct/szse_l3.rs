@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::{Hash, Hasher as _};
 use std::path::Path;
 
-use crate::core::MessageView;
 use crate::protocol::{
     l3_flags, BookEventHeader, BookEventType, BookMode, L3Event, L3EventType, L3Side, TypeId,
 };
+use crate::stream::StreamMessageView;
 
 #[derive(Debug, Clone, Copy)]
 pub enum GapPolicy {
@@ -132,7 +132,7 @@ impl SzseL3Engine {
         &mut self.dispatcher
     }
 
-    pub fn apply_message(&mut self, msg: &MessageView<'_>) -> Result<ApplyStatus> {
+    pub fn apply_message<'a>(&mut self, msg: &impl StreamMessageView<'a>) -> Result<ApplyStatus> {
         let Some(l3) = decode_l3_message(msg, self.policy.decode)? else {
             return Ok(ApplyStatus::Skipped);
         };
@@ -195,15 +195,19 @@ pub fn write_checkpoint_json(path: impl AsRef<Path>, checkpoint: &ChannelCheckpo
     Ok(())
 }
 
-pub fn decode_l3_message(msg: &MessageView<'_>, policy: DecodePolicy) -> Result<Option<L3Message>> {
-    if msg.type_id != TypeId::BookEvent.as_u16() {
+pub fn decode_l3_message<'a>(
+    msg: &impl StreamMessageView<'a>,
+    policy: DecodePolicy,
+) -> Result<Option<L3Message>> {
+    if msg.type_id() != TypeId::BookEvent.as_u16() {
         return match policy {
             DecodePolicy::SkipNonL3 => Ok(None),
-            DecodePolicy::Fail => Err(anyhow!("non-book event type {}", msg.type_id)),
+            DecodePolicy::Fail => Err(anyhow!("non-book event type {}", msg.type_id())),
         };
     }
 
-    let header = read_copy::<BookEventHeader>(msg.payload, 0)
+    let payload = msg.payload();
+    let header = read_copy::<BookEventHeader>(payload, 0)
         .ok_or_else(|| anyhow!("message too small for BookEventHeader"))?;
 
     if header.book_mode != BookMode::L3 as u8 {
@@ -229,16 +233,16 @@ pub fn decode_l3_message(msg: &MessageView<'_>, policy: DecodePolicy) -> Result<
             expected_len
         ));
     }
-    if msg.payload.len() < expected_len {
+    if payload.len() < expected_len {
         return Err(anyhow!(
             "payload too short: {} < {}",
-            msg.payload.len(),
+            payload.len(),
             expected_len
         ));
     }
 
     let payload_offset = std::mem::size_of::<BookEventHeader>();
-    let event = read_copy::<L3Event>(msg.payload, payload_offset)
+    let event = read_copy::<L3Event>(payload, payload_offset)
         .ok_or_else(|| anyhow!("message too small for L3Event"))?;
     Ok(Some(L3Message { header, event }))
 }

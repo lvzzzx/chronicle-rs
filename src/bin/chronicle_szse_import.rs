@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use chronicle::core::segment::DEFAULT_SEGMENT_SIZE;
-use chronicle::import::szse_l3_csv::import_szse_l3_channel;
+use chronicle::ingest::import::szse_l3_csv::import_szse_l3_channel;
 use clap::Parser;
 
 #[derive(Parser)]

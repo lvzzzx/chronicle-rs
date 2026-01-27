@@ -1,5 +1,5 @@
 use crate::protocol::BookEventType;
-use crate::replay::BookEvent;
+use crate::stream::replay::BookEvent;
 
 use super::feature::Trigger;
 

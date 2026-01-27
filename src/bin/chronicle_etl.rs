@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chronicle::etl::{Refinery, SymbolCatalog};
+use chronicle::stream::etl::{Refinery, SymbolCatalog};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};

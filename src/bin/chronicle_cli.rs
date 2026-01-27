@@ -11,7 +11,7 @@ use chronicle::core::retention::retention_candidates;
 use chronicle::core::segment::{load_index, load_reader_meta, validate_segment_size};
 use chronicle::core::{lock_owner_alive, read_lock_info, Queue, WriterLockInfo};
 use chronicle::protocol::{BookEventType, BookMode, L2Diff, L2Snapshot, TypeId};
-use chronicle::replay::{L2Book, LevelsView};
+use chronicle::stream::replay::{L2Book, LevelsView};
 use chronicle::storage::StorageReader;
 use clap::{Parser, Subcommand};
 

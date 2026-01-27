@@ -1,6 +1,6 @@
 use arrow::datatypes::DataType;
 
-use crate::replay::{BookEvent, L2Book};
+use crate::stream::replay::{BookEvent, L2Book};
 
 use super::feature::{ColumnSpec, Feature, RowWriter};
 

@@ -10,7 +10,7 @@ use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
-use super::market::{fxhash, market_id, Appendable};
+use crate::ingest::market::{fxhash, market_id, Appendable};
 use crate::protocol::{
     book_flags, BookEventHeader, BookEventType, BookMode, BookTicker, L2Diff, L2Snapshot,
     PriceLevelUpdate, Trade, TypeId, PROTOCOL_VERSION,

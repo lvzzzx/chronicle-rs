@@ -16,5 +16,7 @@ pub use refinery::Refinery;
 pub use sink::{ParquetSink, RowSink};
 pub use triggers::{AnyTrigger, EventTypeTrigger, TimeBarTrigger, Timebase};
 
-pub use crate::replay::{BookEvent, BookEventPayload, LevelsView, ReplayEngine, ReplayMessage};
-pub use crate::replay::{GapPolicy, ReplayPolicy};
+pub use crate::stream::replay::{
+    BookEvent, BookEventPayload, LevelsView, LiveReplayEngine, ReplayEngine, ReplayMessage,
+};
+pub use crate::stream::replay::{GapPolicy, ReplayPolicy};

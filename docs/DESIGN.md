@@ -92,6 +92,54 @@ To avoid conflicting goals between low-latency IPC and long-term storage, Chroni
 
 The ArchiveTap process reads the live queue in strict order and re-appends events to the archive queue. Historical imports write directly to the archive queue and bypass live IPC entirely.
 
+2.5 Domain-Specific Stream Tables (Market Data Replay)
+
+Chronicle's stream layer is intentionally domain-specific. It is a replay engine for market data and is not a general-purpose state store or query engine.
+
+Scope (market data only):
+    - L2BookTable (crypto-style): snapshot + delta replay to maintain an L2 depth book.
+    - Trade stream (tick-by-tick): trades are stored as a separate stream when needed.
+    - L3BookTable (SZSE): order + trade events are required to reconstruct the L3 book.
+
+Non-goals:
+    - Random-access point-in-time queries.
+    - General-purpose relational joins or SQL-like interfaces.
+
+Trade <-> book relationships for feature extraction are handled in replay/ETL by consuming multiple streams.
+The alignment key is ingest time:
+    - MessageHeader.timestamp_ns is the canonical ingest-time for all messages.
+    - BookEventHeader.ingest_ts_ns should match MessageHeader.timestamp_ns for book events.
+
+For SZSE L3 reconstruction rules and phase handling, see DESIGN-szse-l3-reconstructor.md.
+
+2.6 Layering & Contracts (Module Boundaries)
+
+Chronicle is organized into strict layers to keep the bus clean and the hot path stable.
+Dependencies must flow downward only (higher layers may depend on lower layers; never the reverse).
+
+Layer boundaries:
+    - core (ULL bus): mmap segments, append protocol, reader offsets, wait strategy, retention.
+    - bus (control helpers): layout conventions, discovery, readiness/lease markers.
+    - protocol (stable schema): binary types, TypeId, versioning, flags.
+    - ingest (adapters/importers): map third-party sources into protocol and append to queues.
+    - stream (replay engines): L2/L3 state replay, trade table, feature extraction.
+    - storage/tier (cold path): archive writing, compression, snapshots, read-only access.
+
+API contracts:
+    - core: MessageHeader.timestamp_ns is canonical ingest time for all messages.
+    - protocol: backward-compatible evolution only; breaking changes require new TypeId or versioned struct.
+    - ingest: must set MessageHeader.timestamp_ns and emit canonical protocol payloads only.
+    - stream: ingest-time alignment for multi-stream replay (L2 book + trades).
+    - bus/storage: must not affect hot-path determinism.
+
+2.7 Migration Path (Keep Bus Clean)
+
+Step 1: Document boundaries and contracts (this section).
+Step 2: Gate heavy subsystems behind features so core + bus build cleanly.
+Step 3: Keep protocol as a stable public contract with size/layout tests.
+Step 4: Move domain-specific logic (adapters, replay, ETL) to stream/ingest modules.
+Step 5: Consider crate split only after boundaries are enforced via features.
+
 ⸻
 
 ## 3. Core Architecture

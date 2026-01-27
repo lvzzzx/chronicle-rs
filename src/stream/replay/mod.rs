@@ -1,35 +1,33 @@
-use crate::core::Queue;
-use crate::core::{MessageView, QueueReader, ReaderConfig, WaitStrategy};
+use crate::core::{ReaderConfig, WaitStrategy};
 use crate::protocol::{
     BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId,
 };
+use crate::stream::live::LiveStream;
+use crate::stream::{StreamMessageRef, StreamReader};
 use anyhow::{anyhow, bail, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub mod snapshot;
 
-pub struct ReplayEngine {
+pub struct ReplayEngine<R: StreamReader> {
     root: PathBuf,
-    reader: QueueReader,
+    reader: R,
     policy: ReplayPolicy,
     l2_book: L2Book,
     last_seq: Option<u64>,
     last_gap: Option<(u64, u64)>,
 }
 
-impl ReplayEngine {
+pub type LiveReplayEngine = ReplayEngine<LiveStream>;
+#[cfg(feature = "storage")]
+pub type ArchiveReplayEngine = ReplayEngine<crate::stream::archive::ArchiveStream>;
+
+impl ReplayEngine<LiveStream> {
     pub fn open(path: impl AsRef<Path>, reader: &str) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
-        let reader = Queue::open_subscriber(&root, reader)?;
-        Ok(Self {
-            root,
-            reader,
-            policy: ReplayPolicy::default(),
-            l2_book: L2Book::new(),
-            last_seq: None,
-            last_gap: None,
-        })
+        let reader = LiveStream::open(&root, reader)?;
+        Ok(Self::new(root, reader))
     }
 
     pub fn open_with_config(
@@ -38,15 +36,21 @@ impl ReplayEngine {
         config: ReaderConfig,
     ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
-        let reader = Queue::open_subscriber_with_config(&root, reader, config)?;
-        Ok(Self {
-            root,
+        let reader = LiveStream::open_with_config(&root, reader, config)?;
+        Ok(Self::new(root, reader))
+    }
+}
+
+impl<R: StreamReader> ReplayEngine<R> {
+    pub fn new(root: impl AsRef<Path>, reader: R) -> Self {
+        Self {
+            root: root.as_ref().to_path_buf(),
             reader,
             policy: ReplayPolicy::default(),
             l2_book: L2Book::new(),
             last_seq: None,
             last_gap: None,
-        })
+        }
     }
 
     pub fn set_wait_strategy(&mut self, strategy: WaitStrategy) {
@@ -61,7 +65,7 @@ impl ReplayEngine {
         &self.l2_book
     }
 
-    pub fn reader_mut(&mut self) -> &mut QueueReader {
+    pub fn reader_mut(&mut self) -> &mut R {
         &mut self.reader
     }
 
@@ -79,7 +83,7 @@ impl ReplayEngine {
             &mut self.last_seq,
             &mut self.last_gap,
             &mut self.l2_book,
-            &msg,
+            msg,
         )?;
         Ok(Some(applied.update))
     }
@@ -94,7 +98,7 @@ impl ReplayEngine {
             &mut self.last_seq,
             &mut self.last_gap,
             &mut self.l2_book,
-            &msg,
+            msg,
         )?;
 
         Ok(Some(ReplayMessage {
@@ -178,7 +182,7 @@ struct AppliedMessage<'a> {
     book_event: Option<BookEvent<'a>>,
 }
 
-impl ReplayEngine {
+impl<R: StreamReader> ReplayEngine<R> {
     fn apply_snapshot_payload(
         &mut self,
         header: &snapshot::SnapshotHeader,
@@ -220,7 +224,7 @@ impl ReplayEngine {
                 &mut self.last_seq,
                 &mut self.last_gap,
                 &mut self.l2_book,
-                &msg,
+                msg,
             )?;
             if let Some(event) = applied.book_event {
                 if event.header.exchange_ts_ns >= target_ts_ns {
@@ -240,7 +244,7 @@ impl ReplayEngine {
                 &mut self.last_seq,
                 &mut self.last_gap,
                 &mut self.l2_book,
-                &msg,
+                msg,
             )?;
             if let Some(event) = applied.book_event {
                 if event.header.ingest_ts_ns >= target_ts_ns {
@@ -256,7 +260,7 @@ fn apply_message<'a>(
     last_seq: &mut Option<u64>,
     last_gap: &mut Option<(u64, u64)>,
     l2_book: &mut L2Book,
-    msg: &MessageView<'a>,
+    msg: StreamMessageRef<'a>,
 ) -> Result<AppliedMessage<'a>> {
     if let Some(prev) = *last_seq {
         if msg.seq != prev.wrapping_add(1) {
@@ -293,7 +297,8 @@ fn apply_message<'a>(
         });
     }
 
-    let Some(header) = read_copy::<BookEventHeader>(msg.payload, 0) else {
+    let payload = msg.payload;
+    let Some(header) = read_copy::<BookEventHeader>(payload, 0) else {
         return Ok(AppliedMessage {
             update: ReplayUpdate::Skipped {
                 seq: msg.seq,
@@ -320,7 +325,7 @@ fn apply_message<'a>(
 
     let (update, book_event) = match header.event_type {
         x if x == BookEventType::Snapshot as u8 => {
-            let Some(snapshot) = read_copy::<L2Snapshot>(msg.payload, payload_offset) else {
+            let Some(snapshot) = read_copy::<L2Snapshot>(payload, payload_offset) else {
                 return Ok(AppliedMessage {
                     update: ReplayUpdate::Skipped {
                         seq: msg.seq,
@@ -334,7 +339,7 @@ fn apply_message<'a>(
             };
             let levels_offset = payload_offset + std::mem::size_of::<L2Snapshot>();
             let Some(levels) = LevelsView::new(
-                msg.payload,
+                payload,
                 levels_offset,
                 snapshot.bid_count as usize,
                 snapshot.ask_count as usize,
@@ -362,7 +367,7 @@ fn apply_message<'a>(
             (update, book_event)
         }
         x if x == BookEventType::Diff as u8 => {
-            let Some(diff) = read_copy::<L2Diff>(msg.payload, payload_offset) else {
+            let Some(diff) = read_copy::<L2Diff>(payload, payload_offset) else {
                 return Ok(AppliedMessage {
                     update: ReplayUpdate::Skipped {
                         seq: msg.seq,
@@ -376,7 +381,7 @@ fn apply_message<'a>(
             };
             let levels_offset = payload_offset + std::mem::size_of::<L2Diff>();
             let Some(levels) = LevelsView::new(
-                msg.payload,
+                payload,
                 levels_offset,
                 diff.bid_count as usize,
                 diff.ask_count as usize,
@@ -420,7 +425,7 @@ fn apply_message<'a>(
 }
 
 pub struct ReplayMessage<'a> {
-    pub msg: MessageView<'a>,
+    pub msg: StreamMessageRef<'a>,
     pub update: ReplayUpdate,
     pub book_event: Option<BookEvent<'a>>,
     pub book: &'a L2Book,

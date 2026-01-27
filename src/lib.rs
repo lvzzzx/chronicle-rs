@@ -1,13 +1,17 @@
-pub mod bus;
-pub mod cli;
 pub mod core;
-pub mod etl;
-pub mod feed_binance;
-pub mod import;
+#[cfg(feature = "bus")]
+pub mod bus;
+#[cfg(feature = "cli")]
+pub mod cli;
+#[cfg(feature = "stream")]
+pub mod stream;
+#[cfg(feature = "ingest")]
+pub mod ingest;
+#[cfg(feature = "bus")]
 pub mod layout;
+#[cfg(feature = "protocol")]
 pub mod protocol;
-pub mod reconstruct;
-pub mod replay;
+#[cfg(feature = "storage")]
 pub mod storage;
 
 pub use core::*;

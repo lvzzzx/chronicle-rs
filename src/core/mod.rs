@@ -7,7 +7,6 @@ pub mod clock;
 pub mod control;
 pub mod error;
 pub mod header;
-pub mod merge;
 pub mod mmap;
 pub mod reader;
 pub mod retention;

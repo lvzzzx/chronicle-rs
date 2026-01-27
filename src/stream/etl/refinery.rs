@@ -4,14 +4,14 @@ use crate::protocol::{
     book_flags, BookEventHeader, BookEventType, BookMode, L2Snapshot, PriceLevelUpdate, TypeId,
     PROTOCOL_VERSION,
 };
-use crate::replay::{L2Book, ReplayEngine, ReplayMessage};
+use crate::stream::replay::{L2Book, LiveReplayEngine, ReplayMessage};
 use anyhow::{anyhow, Result};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 pub struct Refinery {
-    engine: ReplayEngine,
+    engine: LiveReplayEngine,
     writer: QueueWriter,
     snapshot_interval_ns: u64,
     last_snapshot_ns: u64,
@@ -29,7 +29,7 @@ impl Refinery {
         snapshot_interval: Duration,
         catalog: Arc<RwLock<SymbolCatalog>>,
     ) -> Result<Self> {
-        let engine = ReplayEngine::open(input_path, reader_name)?;
+        let engine = LiveReplayEngine::open(input_path, reader_name)?;
 
         // Use Archive config for output (flushes index frequently)
         let config = WriterConfig::archive();

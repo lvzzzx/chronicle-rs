@@ -1,4 +1,4 @@
-use chronicle::core::merge::FanInReader;
+use chronicle::stream::merge::FanInReader;
 use chronicle::core::{Queue, WriterConfig};
 use tempfile::tempdir;
 

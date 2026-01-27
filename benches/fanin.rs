@@ -2,7 +2,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Instant;
 
-use chronicle::core::merge::FanInReader;
+use chronicle::stream::merge::FanInReader;
 use chronicle::core::reader::WaitStrategy;
 use chronicle::core::Queue;
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};

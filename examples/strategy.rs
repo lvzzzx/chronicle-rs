@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chronicle::bus::{mark_ready, StrategyId};
-use chronicle::core::merge::FanInReader;
+use chronicle::stream::merge::FanInReader;
 use chronicle::core::{Error, Queue, QueueReader};
 use chronicle::layout::IpcLayout;
 

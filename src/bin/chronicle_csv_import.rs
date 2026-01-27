@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use chronicle::core::segment::DEFAULT_SEGMENT_SIZE;
-use chronicle::feed_binance::market::market_id;
-use chronicle::import::tardis_csv::import_tardis_incremental_book;
+use chronicle::ingest::market::market_id;
+use chronicle::ingest::import::tardis_csv::import_tardis_incremental_book;
 use clap::Parser;
 
 #[derive(Parser)]
