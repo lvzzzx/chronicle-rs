@@ -48,21 +48,33 @@ Enable **offline replay** of segmented log data for:
 │                                       └──────────┘            │
 └─────────────────────────────────────────────────────────────────┘
 
-Multi-Symbol Replay:
+Multi-Symbol Replay (Consistent Hashing):
 ┌─────────────────────────────────────────────────────────────────┐
-│                       Worker Pool                               │
+│                    Message Dispatcher                           │
+│                 (Main Thread Reads Queue)                       │
 │                                                                 │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│  │  Worker 1   │    │  Worker 2   │    │  Worker N   │        │
-│  │  Symbol: A  │    │  Symbol: B  │    │  Symbol: C  │        │
-│  │             │    │             │    │             │        │
-│  │  Replay ──► │    │  Replay ──► │    │  Replay ──► │        │
-│  │  Filter     │    │  Filter     │    │  Filter     │        │
-│  │  Orderbook  │    │  Orderbook  │    │  Orderbook  │        │
-│  │  Features   │    │  Features   │    │  Features   │        │
-│  │  Sink       │    │  Sink       │    │  Sink       │        │
-│  └─────────────┘    └─────────────┘    └─────────────┘        │
-└─────────────────────────────────────────────────────────────────┘
+│  Message → Extract Symbol → hash(symbol) % N → Route to Worker │
+└────────┬────────────┬────────────┬────────────┬─────────────────┘
+         │            │            │            │
+    ┌────▼────┐  ┌────▼────┐  ┌────▼────┐  ┌────▼────┐
+    │Worker 0 │  │Worker 1 │  │Worker 2 │  │Worker N │
+    │─────────│  │─────────│  │─────────│  │─────────│
+    │AAPL     │  │MSFT     │  │GOOGL    │  │TSLA     │
+    │IBM      │  │AMZN     │  │NVDA     │  │META     │
+    │...      │  │...      │  │...      │  │...      │
+    │(200     │  │(200     │  │(200     │  │(200     │
+    │symbols) │  │symbols) │  │symbols) │  │symbols) │
+    │         │  │         │  │         │  │         │
+    │Handler  │  │Handler  │  │Handler  │  │Handler  │
+    │per      │  │per      │  │per      │  │per      │
+    │Symbol   │  │Symbol   │  │Symbol   │  │Symbol   │
+    └─────────┘  └─────────┘  └─────────┘  └─────────┘
+       │             │             │             │
+       └─────────────┴─────────────┴─────────────┘
+                     │
+              ┌──────▼──────┐
+              │ Stats/Output│
+              └─────────────┘
 ```
 
 ### Component Layers
@@ -473,100 +485,201 @@ ReplayPipeline::from_source(reader)
 
 ### Architecture
 
+For processing many symbols (e.g., 1000+) in parallel, use a **fixed worker pool** with **consistent hashing**:
+
+**Key Design**:
+- Fixed number of workers (e.g., 5 threads)
+- Hash each symbol to a specific worker: `hash(symbol) % worker_count`
+- All events for a symbol go to the same worker (ordering preserved)
+- Each worker handles ~N/W symbols (e.g., 1000 symbols / 5 workers = 200 symbols/worker)
+
+**Benefits**:
+- Bounded concurrency (predictable resource usage)
+- Per-symbol ordering guaranteed (stateful processing safe)
+- No lock contention (each symbol owned by one worker)
+- Lazy handler initialization (only create handlers for symbols that appear)
+
+**Flow**:
+1. Main thread reads messages from queue
+2. Extract symbol from each message
+3. Hash symbol → worker_id
+4. Dispatch message to worker's channel
+5. Worker processes message with per-symbol handler
+
 ```rust
-/// Parallel replay with per-symbol workers.
-pub struct MultiSymbolReplay {
-    base_path: PathBuf,
-    symbols: Vec<String>,
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+/// Parallel replay with consistent symbol-to-worker hashing.
+///
+/// Architecture:
+/// - Fixed worker pool (e.g., 5 workers)
+/// - Many symbols (e.g., 1000 symbols)
+/// - Each symbol hashes to a specific worker (e.g., 200 symbols/worker)
+/// - All events for a symbol are processed by the same worker (ordering preserved)
+pub struct MultiSymbolReplay<H> {
+    source: Box<dyn MessageSource>,
     worker_count: usize,
+    handler_factory: Arc<H>,
 }
 
-impl MultiSymbolReplay {
-    /// Create a multi-symbol replay configuration.
-    pub fn new(base_path: impl AsRef<Path>) -> Self {
+/// Per-symbol event handler (user-provided logic).
+pub trait SymbolHandler: Send {
+    /// Process a message for this symbol.
+    fn handle(&mut self, msg: &Message) -> Result<()>;
+
+    /// Flush any buffered state.
+    fn flush(&mut self) -> Result<()>;
+}
+
+impl<H> MultiSymbolReplay<H>
+where
+    H: Fn(&str) -> Box<dyn SymbolHandler> + Send + Sync + 'static,
+{
+    /// Create a multi-symbol replay with a handler factory.
+    pub fn new(source: Box<dyn MessageSource>, worker_count: usize, handler_factory: H) -> Self {
         Self {
-            base_path: base_path.as_ref().to_path_buf(),
-            symbols: Vec::new(),
-            worker_count: num_cpus::get(),
+            source,
+            worker_count,
+            handler_factory: Arc::new(handler_factory),
         }
     }
 
-    /// Add symbols to replay.
-    pub fn add_symbols(mut self, symbols: &[&str]) -> Self {
-        self.symbols.extend(symbols.iter().map(|s| s.to_string()));
-        self
-    }
+    /// Run the replay with consistent hashing.
+    pub fn run(mut self) -> Result<ReplayStats> {
+        let worker_count = self.worker_count;
 
-    /// Set worker thread count (default: num_cpus).
-    pub fn worker_count(mut self, count: usize) -> Self {
-        self.worker_count = count;
-        self
-    }
+        // Create channels for each worker
+        let mut worker_txs = Vec::new();
+        let mut worker_handles = Vec::new();
 
-    /// Execute replay with a per-symbol pipeline factory.
-    pub fn run<F>(self, pipeline_factory: F) -> Result<Vec<PipelineStats>>
-    where
-        F: Fn(String) -> Result<ReplayPipeline<ReplayReader>> + Send + Sync + Clone + 'static,
-    {
-        let (tx, rx) = mpsc::channel();
-        let symbols = Arc::new(self.symbols);
-        let factory = Arc::new(pipeline_factory);
+        for worker_id in 0..worker_count {
+            let (tx, rx) = mpsc::sync_channel::<Message>(1000);
+            worker_txs.push(tx);
 
-        // Spawn worker threads
-        let mut handles = Vec::new();
-        for worker_id in 0..self.worker_count {
-            let symbols = Arc::clone(&symbols);
-            let factory = Arc::clone(&factory);
-            let tx = tx.clone();
+            let factory = Arc::clone(&self.handler_factory);
+            let handle = thread::Builder::new()
+                .name(format!("replay-worker-{}", worker_id))
+                .spawn(move || -> Result<WorkerStats> {
+                    // Per-symbol handlers (lazy-initialized)
+                    let mut handlers: HashMap<String, Box<dyn SymbolHandler>> = HashMap::new();
+                    let mut stats = WorkerStats::default();
 
-            let handle = thread::spawn(move || {
-                // Assign symbols to this worker (round-robin)
-                for (i, symbol) in symbols.iter().enumerate() {
-                    if i % self.worker_count == worker_id {
-                        let pipeline = factory(symbol.clone())?;
-                        let stats = pipeline.run()?;
-                        tx.send((symbol.clone(), stats))?;
+                    while let Ok(msg) = rx.recv() {
+                        let symbol = msg.symbol.as_deref().unwrap_or("UNKNOWN");
+
+                        // Get or create handler for this symbol
+                        let handler = handlers.entry(symbol.to_string())
+                            .or_insert_with(|| factory(symbol));
+
+                        handler.handle(&msg)?;
+                        stats.messages_processed += 1;
                     }
-                }
-                Ok::<_, Error>(())
-            });
-            handles.push(handle);
+
+                    // Flush all handlers
+                    for (symbol, handler) in handlers.iter_mut() {
+                        handler.flush()?;
+                        stats.symbols_processed += 1;
+                    }
+
+                    Ok(stats)
+                })?;
+
+            worker_handles.push(handle);
         }
 
-        drop(tx);  // Close sender
+        // Dispatch loop: read messages and route to workers
+        let mut total_messages = 0;
+        let start = Instant::now();
 
-        // Collect results
-        let mut results = Vec::new();
-        while let Ok((symbol, stats)) = rx.recv() {
-            println!("[{}] {} msgs at {:.2} msg/sec",
-                symbol,
-                stats.messages_read,
-                stats.throughput()
-            );
-            results.push(stats);
+        while let Some(msg) = self.source.next()? {
+            let symbol = msg.symbol.as_deref().unwrap_or("UNKNOWN");
+            let worker_id = hash_symbol_to_worker(symbol, worker_count);
+
+            // Send to designated worker (blocks if channel full)
+            worker_txs[worker_id].send(msg)?;
+            total_messages += 1;
+
+            if total_messages % 100_000 == 0 {
+                let elapsed = start.elapsed().as_secs_f64();
+                let throughput = total_messages as f64 / elapsed;
+                println!("Dispatched {} msgs ({:.0} msg/sec)", total_messages, throughput);
+            }
         }
 
-        // Wait for workers
-        for handle in handles {
-            handle.join().unwrap()?;
+        // Close all channels
+        drop(worker_txs);
+
+        // Wait for workers and collect stats
+        let mut worker_stats = Vec::new();
+        for handle in worker_handles {
+            worker_stats.push(handle.join().unwrap()?);
         }
 
-        Ok(results)
+        Ok(ReplayStats {
+            total_messages,
+            worker_stats,
+            duration: start.elapsed(),
+        })
     }
 }
 
-// Usage
-let replay = MultiSymbolReplay::new("./queue")
-    .add_symbols(&["AAPL", "MSFT", "GOOGL", "AMZN"])
-    .worker_count(4);
+/// Hash a symbol to a worker ID (consistent hashing).
+fn hash_symbol_to_worker(symbol: &str, worker_count: usize) -> usize {
+    let mut hasher = DefaultHasher::new();
+    symbol.hash(&mut hasher);
+    (hasher.finish() as usize) % worker_count
+}
 
-replay.run(|symbol| {
-    let reader = ReplayReader::open_with_filter("./queue", &symbol)?;
-    Ok(ReplayPipeline::from_source(reader)
-        .filter_time_range(start, end)
-        .transform(OrderbookReconstructor::new())
-        .write_to_csv(&format!("features_{}.csv", symbol))?)
-})?;
+#[derive(Debug, Default)]
+pub struct WorkerStats {
+    pub messages_processed: u64,
+    pub symbols_processed: usize,
+}
+
+#[derive(Debug)]
+pub struct ReplayStats {
+    pub total_messages: u64,
+    pub worker_stats: Vec<WorkerStats>,
+    pub duration: Duration,
+}
+
+impl ReplayStats {
+    pub fn throughput(&self) -> f64 {
+        self.total_messages as f64 / self.duration.as_secs_f64()
+    }
+}
+
+// Usage Example: Orderbook reconstruction for 1000 symbols with 5 workers
+let source = Box::new(ReplayReader::open("./queue")?);
+
+let replay = MultiSymbolReplay::new(
+    source,
+    5,  // 5 workers
+    |symbol| {
+        // Factory creates a handler per symbol
+        Box::new(OrderbookReconstructor::new(
+            symbol,
+            CsvSink::new(&format!("features_{}.csv", symbol)).unwrap()
+        ))
+    }
+);
+
+let stats = replay.run()?;
+println!("Processed {} messages at {:.0} msg/sec across {} workers",
+    stats.total_messages,
+    stats.throughput(),
+    stats.worker_stats.len()
+);
+
+// Each worker processed ~200 symbols (1000 / 5)
+for (i, worker) in stats.worker_stats.iter().enumerate() {
+    println!("  Worker {}: {} msgs, {} symbols",
+        i,
+        worker.messages_processed,
+        worker.symbols_processed
+    );
+}
 ```
 
 ---
@@ -662,16 +775,24 @@ Files to create:
 
 ### Phase 4: Multi-Threading (Week 4)
 
-**Goal**: Parallel symbol replay
+**Goal**: Parallel symbol replay with consistent hashing
 
 Files to create:
-- `src/replay/parallel.rs` - `MultiSymbolReplay`
+- `src/replay/parallel.rs` - `MultiSymbolReplay`, `SymbolHandler` trait
+
+**Implementation**:
+- Fixed worker pool (configurable size)
+- Consistent hashing: `hash(symbol) % worker_count`
+- Per-worker message channels (bounded, backpressure-aware)
+- Lazy per-symbol handler initialization
+- Worker stats aggregation
 
 **Tests**:
-- Per-symbol workers
-- Result aggregation
-- Load balancing
-- Error propagation
+- Symbol routing (verify same symbol → same worker)
+- Load distribution (verify symbols spread across workers)
+- Ordering preservation (per-symbol message order maintained)
+- Error propagation (worker errors surface to main thread)
+- Graceful shutdown (all handlers flushed)
 
 ---
 
