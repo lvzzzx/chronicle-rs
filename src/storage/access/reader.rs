@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, PAD_TYPE_ID, RECORD_ALIGN};
 use crate::core::segment::{SEG_DATA_OFFSET, SEG_MAGIC, SEG_VERSION};
-use crate::core::zstd_seek::{read_seek_index, ZstdSeekIndex};
+use crate::storage::zstd_seek::{read_seek_index, ZstdSeekIndex};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 

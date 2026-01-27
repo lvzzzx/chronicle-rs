@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::Write;
 
-use chronicle::core::zstd_seek::read_seek_index;
+use chronicle::storage::zstd_seek::read_seek_index;
 use chronicle::storage::{compress_q_to_zst, ZstdBlockReader};
 use tempfile::tempdir;
 

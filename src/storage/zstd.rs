@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use crate::core::zstd_seek::{read_seek_index, write_seek_index, ZstdSeekEntry, ZstdSeekIndex};
+use crate::storage::zstd_seek::{read_seek_index, write_seek_index, ZstdSeekEntry, ZstdSeekIndex};
 use anyhow::{anyhow, Context, Result};
 
 const DEFAULT_ZSTD_LEVEL: i32 = 3;

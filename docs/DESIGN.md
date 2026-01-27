@@ -50,6 +50,41 @@ Non-responsibilities:
 
 Guiding principle: chronicle::bus must remain a small utility layer. Anything that smells like orchestration stays outside.
 
+2.2.1 IPC communication patterns: chronicle::ipc (zero-cost semantic wrappers)
+
+The IPC layer bridges the gap between the raw queue primitive (core) and application-level communication. It provides reusable patterns (pub/sub, inbox/outbox, fan-in) as zero-cost abstractions that encode communication semantics in types.
+
+Responsibilities:
+	•	Publisher/Subscriber wrappers for broadcast (SPMC) messaging
+	•	InboxOutbox for bidirectional SPSC communication (strategy ↔ router)
+	•	FanInReader for timestamp-ordered merge of multiple queues
+	•	Type-safe APIs that make communication intent explicit
+
+Design Constraints:
+	•	Zero runtime cost: all abstractions compile away
+	•	No additional latency or allocations on hot path
+	•	No vtable dispatch (generic types, not trait objects)
+	•	Preserves all core queue performance characteristics
+
+Why this layer exists:
+	•	Separation of concerns: core is "how to write/read bytes", IPC is "how to communicate"
+	•	Reusability: patterns are useful across different application domains
+	•	Type safety: Publisher vs Subscriber encodes single-writer discipline
+	•	Intent-revealing: code documents its communication pattern
+
+Usage Example:
+```rust
+// Before (raw core API, intent unclear)
+let writer = Queue::open_publisher("./market_data")?;
+let reader = Queue::open_subscriber("./market_data", "strategy_A")?;
+
+// After (IPC API, intent explicit)
+let mut feed = Publisher::open("./market_data")?;
+let mut strategy = Subscriber::open("./market_data", "strategy_A")?;
+```
+
+The IPC layer is strictly optional; applications can use core::Queue directly if preferred. However, IPC provides clearer abstractions for typical HFT communication patterns.
+
 2.3 Passive Discovery & Service Resilience (Scope Split)
 
 We deliberately split "primitives" (in this repo) from "policy" (in the trading system). This keeps the message framework ULL-safe and reusable across different risk stacks and operating models.
@@ -118,7 +153,8 @@ Chronicle is organized into strict layers to keep the bus clean and the hot path
 Dependencies must flow downward only (higher layers may depend on lower layers; never the reverse).
 
 Layer boundaries:
-    - core (ULL bus): mmap segments, append protocol, reader offsets, wait strategy, retention.
+    - core (ULL queue primitive): mmap segments, append protocol, reader offsets, wait strategy, retention.
+    - ipc (communication patterns): pub/sub, inbox/outbox, fan-in; zero-cost wrappers over core.
     - bus (control helpers): layout conventions, discovery, readiness/lease markers.
     - protocol (stable schema): binary types, TypeId, versioning, flags.
     - ingest (adapters/importers): map third-party sources into protocol and append to queues.
@@ -127,10 +163,118 @@ Layer boundaries:
 
 API contracts:
     - core: MessageHeader.timestamp_ns is canonical ingest time for all messages.
+    - ipc: zero-cost abstractions; must not add latency or allocations on hot path.
     - protocol: backward-compatible evolution only; breaking changes require new TypeId or versioned struct.
     - ingest: must set MessageHeader.timestamp_ns and emit canonical protocol payloads only.
     - stream: ingest-time alignment for multi-stream replay (L2 book + trades).
     - bus/storage: must not affect hot-path determinism.
+
+2.6.1 IPC Communication Patterns (chronicle::ipc)
+
+The IPC layer provides reusable communication patterns as zero-cost abstractions over the core queue primitive. These patterns encode communication semantics in types, making intent explicit and code self-documenting.
+
+Design Principles:
+    - Zero-Cost Abstractions: All wrappers compile away; no runtime overhead.
+    - Type Safety: Communication patterns encoded in types (Publisher vs Subscriber vs InboxOutbox).
+    - Intent-Revealing API: Code clearly expresses the communication pattern being used.
+    - Hot Path Preservation: No additional syscalls or allocations on the message path.
+
+Available Patterns:
+
+1. PubSub (Broadcast SPMC)
+   Architecture: One publisher, many independent subscribers.
+   Use Case: Market data feeds → multiple strategies.
+
+   Example:
+   ```rust
+   // Feed process
+   let mut feed = Publisher::open("./data/market/binance_spot")?;
+   feed.publish(0x01, b"market data")?;
+
+   // Strategy process
+   let mut strategy = Subscriber::open("./data/market/binance_spot", "strategy_A")?;
+   while let Some(msg) = strategy.recv()? {
+       process(msg);
+       strategy.commit()?;
+   }
+   ```
+
+   Semantics:
+   - Single writer (enforced by writer.lock)
+   - Multiple independent readers with their own offsets
+   - Each subscriber tracks its own committed position
+   - Retention waits for all live subscribers
+
+2. InboxOutbox (Bidirectional SPSC)
+   Architecture: Paired queues for request/response or bidirectional communication.
+   Use Case: Strategy ↔ Router (orders out, fills/acks in).
+
+   Example:
+   ```rust
+   // Strategy side
+   let mut channel = InboxOutbox::open_strategy(&layout, "strategy_A")?;
+   channel.send_outbound(0x01, b"new order")?;  // orders_out
+   if let Some(fill) = channel.recv_inbound()? {  // orders_in
+       process_fill(fill);
+       channel.commit_inbound()?;
+   }
+
+   // Router side
+   let mut router_channel = InboxOutbox::open_router(&layout, "strategy_A")?;
+   if let Some(order) = router_channel.recv_inbound()? {  // reads orders_out
+       route_order(order);
+       router_channel.send_outbound(0x02, b"filled")?;  // writes orders_in
+       router_channel.commit_inbound()?;
+   }
+   ```
+
+   Semantics:
+   - Two queues: strategy_A/orders_out and strategy_A/orders_in
+   - Each side has one writer (outbox) and one reader (inbox)
+   - One side's outbox is the other side's inbox
+   - Independent commit tracking for each direction
+
+3. FanIn (Many-to-One Merge)
+   Architecture: Timestamp-ordered merge of multiple queues.
+   Use Case: Router aggregating orders from multiple strategies.
+
+   Example:
+   ```rust
+   // Open multiple strategy order queues
+   let sub_a = Subscriber::open("./orders/strategy_A/orders_out", "router")?;
+   let sub_b = Subscriber::open("./orders/strategy_B/orders_out", "router")?;
+   let sub_c = Subscriber::open("./orders/strategy_C/orders_out", "router")?;
+
+   let mut fanin = FanInReader::new(vec![sub_a, sub_b, sub_c])?;
+
+   // Messages returned in timestamp order across all sources
+   while let Some(msg) = fanin.next()? {
+       route_order(msg.source, msg.payload);
+       fanin.commit(msg.source)?;
+   }
+   ```
+
+   Semantics:
+   - Reads from N sources
+   - Returns messages in increasing timestamp_ns order
+   - Ties broken by source index (deterministic)
+   - Independent commit tracking per source
+   - Supports dynamic source addition
+
+Pattern Selection Guide:
+
+| Use Case | Pattern | Writer | Reader | Ordering |
+|----------|---------|--------|--------|----------|
+| Market data broadcast | PubSub | 1 | Many | Arrival |
+| Strategy ↔ Router | InboxOutbox | 1 each way | 1 each way | N/A |
+| Router fan-in | FanIn | Many | 1 | Timestamp |
+| Control/RPC | InboxOutbox | 1 each way | 1 each way | N/A |
+
+Performance Characteristics:
+    - Latency: Same as core::Queue (~200ns zero-syscall, ~1-2µs wake)
+    - Memory: Zero additional allocations on hot path (FanIn uses owned payloads for buffering)
+    - Throughput: No degradation vs direct queue usage
+    - Abstractions: Compile-time only, zero runtime cost
 
 2.7 Migration Path (Keep Bus Clean)
 
@@ -635,6 +779,61 @@ impl QueueReader {
     pub fn wait(&self, timeout: Option<std::time::Duration>) -> Result<()>;
 }
 
+11.1.1 chronicle::ipc API (recommended usage)
+
+**Recommendation**: Applications should prefer `chronicle::ipc` patterns over direct `chronicle::core` usage for typical communication scenarios.
+
+The IPC layer provides zero-cost, type-safe wrappers that encode communication intent:
+
+```rust
+// Pub/Sub (Broadcast)
+use chronicle::ipc::pubsub::{Publisher, Subscriber};
+
+let mut feed = Publisher::open("./market_data")?;
+feed.publish(0x01, b"tick")?;
+
+let mut strategy = Subscriber::open("./market_data", "strategy_A")?;
+while let Some(msg) = strategy.recv()? {
+    process(msg);
+    strategy.commit()?;
+}
+
+// InboxOutbox (Bidirectional SPSC)
+use chronicle::ipc::inbox_outbox::InboxOutbox;
+use chronicle::layout::IpcLayout;
+
+let layout = IpcLayout::new("/var/lib/hft_bus");
+let mut channel = InboxOutbox::open_strategy(&layout, "strategy_A")?;
+channel.send_outbound(0x01, b"order")?;
+if let Some(fill) = channel.recv_inbound()? {
+    process_fill(fill);
+    channel.commit_inbound()?;
+}
+
+// FanIn (Many-to-One Merge)
+use chronicle::ipc::fanin::FanInReader;
+
+let sub_a = Subscriber::open("./orders/strategy_A/orders_out", "router")?;
+let sub_b = Subscriber::open("./orders/strategy_B/orders_out", "router")?;
+let mut fanin = FanInReader::new(vec![sub_a, sub_b])?;
+
+while let Some(msg) = fanin.next()? {
+    route_order(msg.source, msg.payload);
+    fanin.commit(msg.source)?;
+}
+```
+
+Benefits:
+	•	Type Safety: Publisher/Subscriber encodes single-writer discipline
+	•	Intent-Revealing: Code clearly expresses communication pattern
+	•	Zero Cost: Compiles to identical machine code as direct core usage
+	•	Reusability: Patterns work across different application domains
+
+When to use core directly:
+	•	Non-standard communication patterns
+	•	Library/framework development
+	•	Performance debugging/profiling
+
 11.3 Error semantics (architecture contract)
 	•	PayloadTooLarge: payload_len > MAX_PAYLOAD_LEN; no partial write occurs.
 	•	QueueFull: configured capacity would be exceeded; no partial write occurs.
@@ -869,17 +1068,35 @@ chronicle-rs/
 ├── src/
 │   ├── lib.rs
 │   ├── core/
+│   │   ├── clock.rs
 │   │   ├── control.rs
+│   │   ├── error.rs
 │   │   ├── header.rs
-│   │   ├── segment.rs
-│   │   ├── writer.rs
+│   │   ├── mmap.rs
 │   │   ├── reader.rs
 │   │   ├── retention.rs
-│   │   └── wait.rs
+│   │   ├── segment.rs
+│   │   ├── wait.rs
+│   │   ├── writer.rs
+│   │   └── writer_lock.rs
+│   ├── ipc/
+│   │   ├── mod.rs
+│   │   ├── pubsub.rs
+│   │   ├── inbox_outbox.rs
+│   │   └── fanin.rs
 │   ├── protocol/
 │   ├── layout/
 │   ├── bus/
+│   ├── stream/
+│   ├── ingest/
 │   └── storage/
+│       ├── access/
+│       ├── archive_writer.rs
+│       ├── meta.rs
+│       ├── raw_archiver.rs
+│       ├── tier.rs
+│       ├── zstd.rs
+│       └── zstd_seek.rs
 ├── examples/
 ├── tests/
 ├── benches/

@@ -15,7 +15,6 @@ pub mod segment;
 pub mod wait;
 pub mod writer;
 mod writer_lock;
-pub mod zstd_seek;
 
 pub use clock::{Clock, QuantaClock, SystemClock};
 pub use error::{Error, Result};

@@ -8,6 +8,8 @@ pub mod stream;
 #[cfg(feature = "ingest")]
 pub mod ingest;
 #[cfg(feature = "bus")]
+pub mod ipc;
+#[cfg(feature = "bus")]
 pub mod layout;
 #[cfg(feature = "protocol")]
 pub mod protocol;
