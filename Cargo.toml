@@ -67,6 +67,7 @@ stream = [
     "dep:arrow",
     "dep:blake3",
     "dep:clap",
+    "dep:csv",
     "dep:parquet",
     "dep:serde",
     "dep:serde_json",

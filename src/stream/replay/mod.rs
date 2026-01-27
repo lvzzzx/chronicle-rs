@@ -9,6 +9,17 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub mod snapshot;
+mod transform;
+mod sink;
+mod pipeline;
+mod parallel;
+
+pub use transform::{Transform, Identity, TimeRangeFilter, TypeFilter, Sampler, TransformChain};
+pub use sink::{Sink, QueueSink, NullSink, VecSink};
+#[cfg(feature = "stream")]
+pub use sink::CsvSink;
+pub use pipeline::{ReplayPipeline, ReplayStats};
+pub use parallel::{MultiSymbolReplay, SymbolHandler, WorkerStats, MultiReplayStats};
 
 pub struct ReplayEngine<R: StreamReader> {
     root: PathBuf,
