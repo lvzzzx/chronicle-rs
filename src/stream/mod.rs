@@ -7,7 +7,7 @@ pub mod etl;
 pub mod live;
 pub mod merge;
 pub mod replay;
-pub mod reconstruct;
+pub mod sequencer;
 #[cfg(feature = "storage")]
 pub mod archive;
 

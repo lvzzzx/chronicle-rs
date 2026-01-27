@@ -5,7 +5,7 @@ use std::time::Instant;
 use anyhow::{anyhow, Result};
 use clap::Parser;
 
-use chronicle::stream::reconstruct::szse_l3::{
+use chronicle::venues::szse::l3::{
     decode_l3_message, write_checkpoint_json, ChannelCheckpoint, ChannelSequencer, DecodePolicy,
     GapPolicy, L3Message, SymbolCheckpoint, SzseL3Worker, UnknownOrderPolicy,
 };
