@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chronicle::cli::monitor;
 use chronicle::core::control::ControlFile;
-use chronicle::core::retention::retention_candidates;
+use chronicle::core::retention::{retention_candidates, RetentionConfig};
 use chronicle::core::segment::{load_index, load_reader_meta, validate_segment_size};
 use chronicle::core::{lock_owner_alive, read_lock_info, Queue, WriterLockInfo};
 use chronicle::protocol::{BookEventType, BookMode, L2Diff, L2Snapshot, TypeId};
@@ -264,7 +264,7 @@ fn cmd_doctor(bus_root: &Path, out: &mut dyn Write) -> Result<(), Box<dyn Error>
         write_lock_status(read_lock_info(&lock_path)?, out)?;
 
         let candidates =
-            retention_candidates(&queue, head_segment as u64, head_offset, segment_size)?;
+            retention_candidates(&queue, head_segment as u64, head_offset, segment_size, &RetentionConfig::default())?;
         if candidates.is_empty() {
             writeln!(out, "retention_candidates count=0")?;
         } else {

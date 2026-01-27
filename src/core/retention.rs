@@ -1,25 +1,49 @@
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::core::segment::load_reader_meta;
 use crate::core::{Error, Result};
 
-const READER_TTL_NS: u64 = 30_000_000_000;
-const MAX_RETENTION_LAG: u64 = 10 * 1024 * 1024 * 1024;
+/// Default reader TTL: 30 seconds
+const DEFAULT_READER_TTL: Duration = Duration::from_secs(30);
+/// Default max retention lag: 10GB
+const DEFAULT_MAX_RETENTION_LAG: u64 = 10 * 1024 * 1024 * 1024;
+
+/// Configuration for segment retention and cleanup.
+#[derive(Debug, Clone, Copy)]
+pub struct RetentionConfig {
+    /// Time-to-live for reader heartbeats. Readers that haven't updated their
+    /// heartbeat within this duration are considered inactive and won't block
+    /// segment cleanup.
+    pub reader_ttl: Duration,
+    /// Maximum lag (in bytes) a reader can fall behind the writer before it's
+    /// considered too slow and won't block segment cleanup.
+    pub max_reader_lag: u64,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            reader_ttl: DEFAULT_READER_TTL,
+            max_reader_lag: DEFAULT_MAX_RETENTION_LAG,
+        }
+    }
+}
 
 pub fn cleanup_segments(
     root: &Path,
     head_segment: u64,
     head_offset: u64,
     segment_size: u64,
+    config: &RetentionConfig,
 ) -> Result<Vec<u64>> {
     let readers_dir = root.join("readers");
     if !readers_dir.exists() {
         return Ok(Vec::new());
     }
 
-    let min_segment = min_live_reader_segment(root, head_segment, head_offset, segment_size)?;
+    let min_segment = min_live_reader_segment(root, head_segment, head_offset, segment_size, config)?;
 
     let mut deleted = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -51,13 +75,14 @@ pub fn retention_candidates(
     head_segment: u64,
     head_offset: u64,
     segment_size: u64,
+    config: &RetentionConfig,
 ) -> Result<Vec<u64>> {
     let readers_dir = root.join("readers");
     if !readers_dir.exists() {
         return Ok(Vec::new());
     }
 
-    let min_segment = min_live_reader_segment(root, head_segment, head_offset, segment_size)?;
+    let min_segment = min_live_reader_segment(root, head_segment, head_offset, segment_size, config)?;
 
     let mut candidates = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -88,6 +113,7 @@ pub fn min_live_reader_segment(
     head_segment: u64,
     head_offset: u64,
     segment_size: u64,
+    config: &RetentionConfig,
 ) -> Result<u64> {
     let readers_dir = root.join("readers");
     if !readers_dir.exists() {
@@ -103,6 +129,7 @@ pub fn min_live_reader_segment(
         .as_nanos();
     let now_ns = u64::try_from(now_ns)
         .map_err(|_| Error::Unsupported("system time exceeds timestamp range"))?;
+    let reader_ttl_ns = config.reader_ttl.as_nanos() as u64;
 
     let mut min_segment: Option<u64> = None;
     for entry in fs::read_dir(&readers_dir)? {
@@ -113,7 +140,7 @@ pub fn min_live_reader_segment(
         }
         let meta = load_reader_meta(&path)?;
         if meta.last_heartbeat_ns != 0
-            && now_ns.saturating_sub(meta.last_heartbeat_ns) > READER_TTL_NS
+            && now_ns.saturating_sub(meta.last_heartbeat_ns) > reader_ttl_ns
         {
             continue;
         }
@@ -121,7 +148,7 @@ pub fn min_live_reader_segment(
             .segment_id
             .saturating_mul(segment_size)
             .saturating_add(meta.offset);
-        if head > reader_global && head - reader_global > MAX_RETENTION_LAG {
+        if head > reader_global && head - reader_global > config.max_reader_lag {
             continue;
         }
         min_segment = Some(match min_segment {
@@ -138,6 +165,7 @@ pub fn min_live_reader_position(
     head_segment: u64,
     head_offset: u64,
     segment_size: u64,
+    config: &RetentionConfig,
 ) -> Result<u64> {
     let readers_dir = root.join("readers");
     let head = head_segment
@@ -153,6 +181,7 @@ pub fn min_live_reader_position(
         .as_nanos();
     let now_ns = u64::try_from(now_ns)
         .map_err(|_| Error::Unsupported("system time exceeds timestamp range"))?;
+    let reader_ttl_ns = config.reader_ttl.as_nanos() as u64;
 
     let mut min_pos: Option<u64> = None;
     for entry in fs::read_dir(&readers_dir)? {
@@ -163,7 +192,7 @@ pub fn min_live_reader_position(
         }
         let meta = load_reader_meta(&path)?;
         if meta.last_heartbeat_ns != 0
-            && now_ns.saturating_sub(meta.last_heartbeat_ns) > READER_TTL_NS
+            && now_ns.saturating_sub(meta.last_heartbeat_ns) > reader_ttl_ns
         {
             continue;
         }
@@ -171,7 +200,7 @@ pub fn min_live_reader_position(
             .segment_id
             .saturating_mul(segment_size)
             .saturating_add(meta.offset);
-        if head > reader_global && head - reader_global > MAX_RETENTION_LAG {
+        if head > reader_global && head - reader_global > config.max_reader_lag {
             continue;
         }
         min_pos = Some(match min_pos {

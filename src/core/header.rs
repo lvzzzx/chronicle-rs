@@ -7,12 +7,16 @@ pub const RECORD_ALIGN: usize = 64;
 pub const MAX_PAYLOAD_LEN: usize = u32::MAX as usize - 1;
 pub const PAD_TYPE_ID: u16 = 0xFFFF;
 
+/// Current message header wire format version.
+pub const MSG_VERSION: u8 = 1;
+
 pub const COMMIT_LEN_OFFSET: usize = 0;
+pub const VERSION_OFFSET: usize = 4;
 pub const SEQ_OFFSET: usize = 8;
 pub const TIMESTAMP_OFFSET: usize = 16;
 pub const TYPE_ID_OFFSET: usize = 24;
 pub const FLAGS_OFFSET: usize = 26;
-pub const RESERVED_OFFSET: usize = 28;
+pub const CHECKSUM_OFFSET: usize = 28;
 
 #[repr(C, align(64))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,12 +25,15 @@ pub struct MessageHeader {
     /// 0 = uncommitted
     /// >0 = committed payload length + 1
     pub commit_len: u32,
-    pub _pad0: u32,
+    /// Wire format version (currently MSG_VERSION = 1)
+    pub version: u8,
+    pub _pad0: [u8; 3],
     pub seq: u64,
     pub timestamp_ns: u64,
     pub type_id: u16,
     pub flags: u16,
-    pub reserved_u32: u32,
+    /// CRC32 checksum of the payload
+    pub checksum: u32,
     pub _pad: [u8; 32],
 }
 
@@ -36,16 +43,17 @@ impl MessageHeader {
         timestamp_ns: u64,
         type_id: u16,
         flags: u16,
-        reserved_u32: u32,
+        checksum: u32,
     ) -> Self {
         Self {
             commit_len: 0,
-            _pad0: 0,
+            version: MSG_VERSION,
+            _pad0: [0u8; 3],
             seq,
             timestamp_ns,
             type_id,
             flags,
-            reserved_u32,
+            checksum,
             _pad: [0u8; 32],
         }
     }
@@ -54,13 +62,14 @@ impl MessageHeader {
         let mut buf = [0u8; 64];
         buf[COMMIT_LEN_OFFSET..COMMIT_LEN_OFFSET + 4]
             .copy_from_slice(&self.commit_len.to_le_bytes());
-        buf[4..8].copy_from_slice(&self._pad0.to_le_bytes());
+        buf[VERSION_OFFSET] = self.version;
+        buf[5..8].copy_from_slice(&self._pad0);
         buf[SEQ_OFFSET..SEQ_OFFSET + 8].copy_from_slice(&self.seq.to_le_bytes());
         buf[TIMESTAMP_OFFSET..TIMESTAMP_OFFSET + 8]
             .copy_from_slice(&self.timestamp_ns.to_le_bytes());
         buf[TYPE_ID_OFFSET..TYPE_ID_OFFSET + 2].copy_from_slice(&self.type_id.to_le_bytes());
         buf[FLAGS_OFFSET..FLAGS_OFFSET + 2].copy_from_slice(&self.flags.to_le_bytes());
-        buf[RESERVED_OFFSET..RESERVED_OFFSET + 4].copy_from_slice(&self.reserved_u32.to_le_bytes());
+        buf[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 4].copy_from_slice(&self.checksum.to_le_bytes());
         buf[32..64].copy_from_slice(&self._pad);
         buf
     }
@@ -71,7 +80,12 @@ impl MessageHeader {
                 .try_into()
                 .expect("slice length"),
         );
-        let _pad0 = u32::from_le_bytes(bytes[4..8].try_into().expect("slice length"));
+        let version = bytes[VERSION_OFFSET];
+        if version != MSG_VERSION {
+            return Err(Error::UnsupportedVersion(version as u32));
+        }
+        let mut _pad0 = [0u8; 3];
+        _pad0.copy_from_slice(&bytes[5..8]);
         let seq = u64::from_le_bytes(
             bytes[SEQ_OFFSET..SEQ_OFFSET + 8]
                 .try_into()
@@ -92,8 +106,8 @@ impl MessageHeader {
                 .try_into()
                 .expect("slice length"),
         );
-        let reserved_u32 = u32::from_le_bytes(
-            bytes[RESERVED_OFFSET..RESERVED_OFFSET + 4]
+        let checksum = u32::from_le_bytes(
+            bytes[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 4]
                 .try_into()
                 .expect("slice length"),
         );
@@ -101,12 +115,13 @@ impl MessageHeader {
         _pad.copy_from_slice(&bytes[32..64]);
         Ok(Self {
             commit_len,
+            version,
             _pad0,
             seq,
             timestamp_ns,
             type_id,
             flags,
-            reserved_u32,
+            checksum,
             _pad,
         })
     }
@@ -146,7 +161,7 @@ impl MessageHeader {
 
     pub fn validate_crc(&self, payload: &[u8]) -> Result<()> {
         let expected = Self::crc32(payload);
-        if expected == self.reserved_u32 {
+        if expected == self.checksum {
             Ok(())
         } else {
             Err(Error::Corrupt("crc mismatch"))
@@ -156,7 +171,7 @@ impl MessageHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::MessageHeader;
+    use super::{MessageHeader, MSG_VERSION};
     use std::mem::{align_of, size_of};
 
     #[test]
@@ -175,12 +190,13 @@ mod tests {
     fn header_round_trip_preserves_fields() {
         let header = MessageHeader {
             commit_len: 42,
-            _pad0: 0xAABB_CCDD,
+            version: MSG_VERSION,
+            _pad0: [0xAA, 0xBB, 0xCC],
             seq: 0x1122_3344_5566_7788,
             timestamp_ns: 0x99AA_BBCC_DDEE_FF00,
             type_id: 0x1357,
             flags: 0x2468,
-            reserved_u32: 0x0F0E_0D0C,
+            checksum: 0x0F0E_0D0C,
             _pad: [0x5A; 32],
         };
         let bytes = header.to_bytes();

@@ -9,6 +9,7 @@ use crate::core::clock::{Clock, SystemClock};
 use crate::core::control::ControlFile;
 use crate::core::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, RECORD_ALIGN};
 use crate::core::mmap::MmapFile;
+use crate::core::retention::RetentionConfig;
 use crate::core::seek_index::{SeekIndexBuilder, DEFAULT_INDEX_STRIDE_RECORDS};
 use crate::core::segment::{
     load_index, open_segment, prepare_or_open_segment, prepare_segment, prepare_segment_temp,
@@ -31,9 +32,25 @@ const PREALLOC_YIELD_EVERY: u32 = 64;
 const PREALLOC_QUEUE_DEPTH: usize = 1;
 const PREALLOC_NO_REQUEST: u64 = u64::MAX;
 
+/// Metrics exposed by the queue writer for monitoring and debugging.
+#[derive(Debug, Clone, Default)]
+pub struct WriterMetrics {
+    /// Number of errors encountered during segment preallocation.
+    pub prealloc_errors: u64,
+    /// Number of errors encountered during async segment sealing.
+    pub seal_errors: u64,
+    /// Number of errors encountered during segment retention/cleanup.
+    pub retention_errors: u64,
+    /// Total number of segment rolls performed.
+    pub rolls: u64,
+    /// Total bytes written to the queue (payload + headers).
+    pub bytes_written: u64,
+}
+
 // Offload retention checks to a background thread to avoid filesystem I/O on the hot path.
 struct RetentionWorker {
     request_tx: mpsc::SyncSender<(u64, u64)>, // (segment_id, offset)
+    errors: Arc<AtomicU64>,
 }
 
 impl RetentionWorker {
@@ -42,8 +59,11 @@ impl RetentionWorker {
         segment_size: u64,
         check_interval: Duration,
         min_reader_pos: Arc<AtomicU64>,
+        retention_config: RetentionConfig,
     ) -> Result<Self> {
         let (request_tx, request_rx) = mpsc::sync_channel::<(u64, u64)>(1);
+        let errors = Arc::new(AtomicU64::new(0));
+        let errors_handle = Arc::clone(&errors);
 
         thread::Builder::new()
             .name("segment-retention".to_string())
@@ -72,27 +92,39 @@ impl RetentionWorker {
                         head_segment,
                         head_offset,
                         segment_size,
+                        &retention_config,
                     ) {
                         Ok(pos) => min_reader_pos.store(pos, Ordering::Release),
-                        Err(_) => {} // Squelch errors in background
+                        Err(_) => {
+                            errors_handle.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
 
                     // 2. Perform cleanup
-                    let _ = crate::core::retention::cleanup_segments(
+                    if crate::core::retention::cleanup_segments(
                         &path,
                         head_segment,
                         head_offset,
                         segment_size,
-                    );
+                        &retention_config,
+                    )
+                    .is_err()
+                    {
+                        errors_handle.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             })
             .map_err(Error::Io)?;
 
-        Ok(Self { request_tx })
+        Ok(Self { request_tx, errors })
     }
 
     fn request(&self, segment_id: u64, offset: u64) -> bool {
         self.request_tx.try_send((segment_id, offset)).is_ok()
+    }
+
+    fn error_count(&self) -> u64 {
+        self.errors.load(Ordering::Relaxed)
     }
 }
 
@@ -115,6 +147,8 @@ pub struct WriterConfig {
     pub retention_check_bytes: u64,
     pub index_flush_interval: Duration,
     pub index_flush_records: u64,
+    /// Retention configuration for segment cleanup.
+    pub retention: RetentionConfig,
     // Offload segment sync to a background thread on roll (lower latency, not durable to power loss).
     pub defer_seal_sync: bool,
     // Spin-wait budget for a preallocated next segment during roll.
@@ -136,6 +170,7 @@ impl Default for WriterConfig {
             retention_check_bytes: RETENTION_CHECK_BYTES,
             index_flush_interval: Duration::ZERO,
             index_flush_records: 0,
+            retention: RetentionConfig::default(),
             defer_seal_sync: false,
             prealloc_wait: Duration::from_micros(0),
             require_prealloc: false,
@@ -162,6 +197,7 @@ impl WriterConfig {
             retention_check_bytes: RETENTION_CHECK_BYTES,
             index_flush_interval: Duration::ZERO,
             index_flush_records: 0,
+            retention: RetentionConfig::default(),
             defer_seal_sync: false,
             prealloc_wait: Duration::from_micros(0),
             require_prealloc: false,
@@ -338,6 +374,7 @@ pub struct QueueWriter<C: Clock = SystemClock> {
     index_records_since_flush: u64,
     config: WriterConfig,
     segment_size: usize,
+    retention_config: RetentionConfig,
     retention_worker: RetentionWorker,
     min_reader_pos: Arc<AtomicU64>,
     last_retention_signal_head: u64,
@@ -346,6 +383,10 @@ pub struct QueueWriter<C: Clock = SystemClock> {
     async_sealer: Option<AsyncSealer>,
     _lock: WriterLock,
     clock: C,
+    /// Total number of segment rolls performed.
+    rolls: u64,
+    /// Total bytes written to the queue.
+    bytes_written: u64,
 }
 
 impl Queue {
@@ -451,11 +492,13 @@ impl Queue {
 
         let head_global = segment_id as u64 * segment_size as u64 + write_offset;
         let min_reader_pos = Arc::new(AtomicU64::new(0));
+        let retention_config = config.retention;
         let initial_min = crate::core::retention::min_live_reader_position(
             &path,
             segment_id as u64,
             write_offset,
             segment_size as u64,
+            &retention_config,
         )
         .unwrap_or(head_global);
         min_reader_pos.store(initial_min, Ordering::Relaxed);
@@ -465,6 +508,7 @@ impl Queue {
             segment_size as u64,
             config.retention_check_interval,
             Arc::clone(&min_reader_pos),
+            retention_config,
         )?;
 
         let prealloc = PreallocWorker::new(path.clone(), segment_size, config.memlock)?;
@@ -498,6 +542,7 @@ impl Queue {
             index_records_since_flush: 0,
             config,
             segment_size,
+            retention_config,
             retention_worker,
             min_reader_pos,
             last_retention_signal_head: head_global,
@@ -506,6 +551,8 @@ impl Queue {
             async_sealer,
             _lock: lock,
             clock,
+            rolls: 0,
+            bytes_written: 0,
         };
 
         writer.trigger_preallocation(segment_id as u64 + 1);
@@ -659,6 +706,7 @@ impl<C: Clock> QueueWriter<C> {
             .write_offset
             .checked_add(record_len as u64)
             .ok_or(Error::Corrupt("write offset overflow"))?;
+        self.bytes_written = self.bytes_written.saturating_add(record_len as u64);
         self.control.set_write_offset(self.write_offset);
         self.control.set_writer_heartbeat_ns(now_ns()?);
 
@@ -716,6 +764,7 @@ impl<C: Clock> QueueWriter<C> {
                         head_segment,
                         head_offset,
                         self.segment_size as u64,
+                        &self.retention_config,
                     ) {
                         self.min_reader_pos.store(pos, Ordering::Release);
                         if self.has_capacity(record_len)? {
@@ -794,12 +843,24 @@ impl<C: Clock> QueueWriter<C> {
         self.prealloc.error_count()
     }
 
+    /// Returns current writer metrics for monitoring and debugging.
+    pub fn metrics(&self) -> WriterMetrics {
+        WriterMetrics {
+            prealloc_errors: self.prealloc.error_count(),
+            seal_errors: self.async_seal_error_count(),
+            retention_errors: self.retention_worker.error_count(),
+            rolls: self.rolls,
+            bytes_written: self.bytes_written,
+        }
+    }
+
     pub fn cleanup(&self) -> Result<Vec<u64>> {
         crate::core::retention::cleanup_segments(
             &self.path,
             self.segment_id as u64,
             self.write_offset,
             self.segment_size as u64,
+            &self.retention_config,
         )
     }
 
@@ -837,6 +898,7 @@ impl<C: Clock> QueueWriter<C> {
 
         self.segment_id = next_segment;
         self.write_offset = SEG_DATA_OFFSET as u64;
+        self.rolls = self.rolls.saturating_add(1);
         self.seek_index
             .reset(self.segment_id as u64, self.segment_size as u64);
         self.index_last_flush = Instant::now();

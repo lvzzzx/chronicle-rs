@@ -29,6 +29,28 @@ pub struct MessageView<'a> {
     pub payload: &'a [u8],
 }
 
+/// Owned version of MessageView for batch operations where the message
+/// needs to outlive the reader borrow.
+#[derive(Debug, Clone)]
+pub struct OwnedMessage {
+    pub seq: u64,
+    pub timestamp_ns: u64,
+    pub type_id: u16,
+    pub payload: Vec<u8>,
+}
+
+impl OwnedMessage {
+    /// Creates an owned message from a borrowed message view.
+    pub fn from_view(view: &MessageView<'_>) -> Self {
+        Self {
+            seq: view.seq,
+            timestamp_ns: view.timestamp_ns,
+            type_id: view.type_id,
+            payload: view.payload.to_vec(),
+        }
+    }
+}
+
 pub(crate) struct MessageRef {
     pub seq: u64,
     pub timestamp_ns: u64,
@@ -304,6 +326,52 @@ impl QueueReader {
             type_id: message.type_id,
             payload,
         }))
+    }
+
+    /// Reads all available messages up to `max` into a Vec.
+    ///
+    /// This is useful for batch processing scenarios where allocation is acceptable.
+    /// Each message is copied into an owned `OwnedMessage`.
+    ///
+    /// Returns an empty Vec if no messages are available.
+    pub fn drain_available(&mut self, max: usize) -> Result<Vec<OwnedMessage>> {
+        let mut messages = Vec::new();
+        while messages.len() < max {
+            match self.next()? {
+                Some(view) => messages.push(OwnedMessage::from_view(&view)),
+                None => break,
+            }
+        }
+        Ok(messages)
+    }
+
+    /// Process messages in place without allocation.
+    ///
+    /// The callback receives borrowed message views and returns `true` to continue
+    /// processing or `false` to stop early. This is the most efficient way to
+    /// consume multiple messages when allocation overhead is unacceptable.
+    ///
+    /// Returns the number of messages processed.
+    pub fn for_each_available<F>(&mut self, max: usize, mut f: F) -> Result<usize>
+    where
+        F: FnMut(MessageView<'_>) -> bool,
+    {
+        let mut count = 0;
+        while count < max {
+            let Some(msg) = self.next_ref()? else { break };
+            let payload = self.payload_at(msg.payload_offset, msg.payload_len)?;
+            let view = MessageView {
+                seq: msg.seq,
+                timestamp_ns: msg.timestamp_ns,
+                type_id: msg.type_id,
+                payload,
+            };
+            if !f(view) {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count)
     }
 
     pub fn commit(&mut self) -> Result<()> {

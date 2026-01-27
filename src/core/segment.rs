@@ -10,7 +10,7 @@ pub const DEFAULT_SEGMENT_SIZE: usize = 128 * 1024 * 1024;
 pub const SEG_HEADER_SIZE: usize = 64;
 pub const SEG_DATA_OFFSET: usize = 64;
 pub const SEG_MAGIC: u32 = 0x53454730; // 'SEG0'
-pub const SEG_VERSION: u32 = 1;
+pub const SEG_VERSION: u32 = 2;
 pub const SEG_FLAG_SEALED: u32 = 1;
 
 #[repr(C)]
