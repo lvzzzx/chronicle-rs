@@ -9,12 +9,7 @@ use crate::protocol::{
     l3_flags, BookEventHeader, BookEventType, BookMode, L3Event, L3EventType, L3Side, TypeId,
 };
 use crate::stream::StreamMessageView;
-
-#[derive(Debug, Clone, Copy)]
-pub enum GapPolicy {
-    Fail,
-    Ignore,
-}
+use crate::stream::sequencer::{GapPolicy, SequenceValidator};
 
 #[derive(Debug, Clone, Copy)]
 pub enum DecodePolicy {
@@ -38,7 +33,7 @@ pub struct ReconstructPolicy {
 impl Default for ReconstructPolicy {
     fn default() -> Self {
         Self {
-            gap: GapPolicy::Fail,
+            gap: GapPolicy::Panic,
             decode: DecodePolicy::Fail,
             unknown_order: UnknownOrderPolicy::Fail,
         }
@@ -58,47 +53,9 @@ pub struct L3Message {
 }
 
 #[derive(Debug)]
-pub struct ChannelSequencer {
-    last_seq: Option<u64>,
-    policy: GapPolicy,
-}
-
-impl ChannelSequencer {
-    pub fn new(policy: GapPolicy) -> Self {
-        Self {
-            last_seq: None,
-            policy,
-        }
-    }
-
-    pub fn last_seq(&self) -> Option<u64> {
-        self.last_seq
-    }
-
-    pub fn set_policy(&mut self, policy: GapPolicy) {
-        self.policy = policy;
-    }
-
-    pub fn check(&mut self, seq: u64) -> Result<()> {
-        if let Some(prev) = self.last_seq {
-            if seq != prev.wrapping_add(1) {
-                match self.policy {
-                    GapPolicy::Fail => {
-                        bail!("sequence gap: {} -> {}", prev, seq);
-                    }
-                    GapPolicy::Ignore => {}
-                }
-            }
-        }
-        self.last_seq = Some(seq);
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
 pub struct SzseL3Engine {
     policy: ReconstructPolicy,
-    sequencer: ChannelSequencer,
+    sequencer: SequenceValidator,
     dispatcher: SzseL3Dispatcher,
     channel_id: Option<u32>,
 }
@@ -106,7 +63,7 @@ pub struct SzseL3Engine {
 impl SzseL3Engine {
     pub fn new(worker_count: usize) -> Self {
         let policy = ReconstructPolicy::default();
-        let sequencer = ChannelSequencer::new(policy.gap);
+        let sequencer = SequenceValidator::new(policy.gap);
         let dispatcher = SzseL3Dispatcher::new(worker_count);
         Self {
             policy,
@@ -150,14 +107,14 @@ impl SzseL3Engine {
         }
 
         self.sequencer.set_policy(self.policy.gap);
-        self.sequencer.check(l3.header.seq)?;
+        let _ = self.sequencer.check(l3.header.seq)?;
         self.dispatcher.route(&l3, self.policy.unknown_order)?;
         Ok(ApplyStatus::Applied)
     }
 
     pub fn checkpoint(&self) -> Option<ChannelCheckpoint> {
         let channel = self.channel_id?;
-        let last_seq = self.sequencer.last_seq?;
+        let last_seq = self.sequencer.last_seq()?;
         let mut symbols = Vec::new();
         for worker in &self.dispatcher.workers {
             for (symbol, book) in &worker.books {

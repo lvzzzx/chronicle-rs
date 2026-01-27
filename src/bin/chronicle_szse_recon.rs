@@ -6,11 +6,12 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 
 use chronicle::venues::szse::l3::{
-    decode_l3_message, write_checkpoint_json, ChannelCheckpoint, ChannelSequencer, DecodePolicy,
+    decode_l3_message, write_checkpoint_json, ChannelCheckpoint, DecodePolicy,
     GapPolicy, L3Message, SymbolCheckpoint, SzseL3Worker, UnknownOrderPolicy,
 };
 use chronicle::protocol::{BookEventHeader, BookEventType, BookMode};
 use chronicle::storage::StorageReader;
+use chronicle::stream::sequencer::SequenceValidator;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{self, SyncSender};
@@ -68,7 +69,7 @@ fn main() -> Result<()> {
         .workers
         .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
         .unwrap_or(1);
-    let mut sequencer = ChannelSequencer::new(GapPolicy::Fail);
+    let mut sequencer = SequenceValidator::new(GapPolicy::Panic);
     let decode_policy = DecodePolicy::Fail;
     let unknown_order = UnknownOrderPolicy::Fail;
     let queue_capacity = args.queue_capacity.max(1);
@@ -135,7 +136,7 @@ fn main() -> Result<()> {
                 channel_id = Some(header.stream_id);
             }
 
-            sequencer.check(header.seq)?;
+            let _ = sequencer.check(header.seq)?;
             if let Some(target) = symbol_filter {
                 if header.market_id != target {
                     filtered = filtered.saturating_add(1);

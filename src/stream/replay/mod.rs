@@ -4,7 +4,8 @@ use crate::protocol::{
 };
 use crate::stream::live::LiveStream;
 use crate::stream::{StreamMessageRef, StreamReader};
-use anyhow::{anyhow, bail, Result};
+use crate::stream::sequencer::{GapDetection, SequenceValidator};
+use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -20,13 +21,14 @@ pub use sink::{Sink, QueueSink, NullSink, VecSink};
 pub use sink::CsvSink;
 pub use pipeline::{ReplayPipeline, ReplayStats};
 pub use parallel::{MultiSymbolReplay, SymbolHandler, WorkerStats, MultiReplayStats};
+pub use crate::stream::sequencer::GapPolicy;
 
 pub struct ReplayEngine<R: StreamReader> {
     root: PathBuf,
     reader: R,
     policy: ReplayPolicy,
     l2_book: L2Book,
-    last_seq: Option<u64>,
+    sequencer: SequenceValidator,
     last_gap: Option<(u64, u64)>,
 }
 
@@ -54,12 +56,13 @@ impl ReplayEngine<LiveStream> {
 
 impl<R: StreamReader> ReplayEngine<R> {
     pub fn new(root: impl AsRef<Path>, reader: R) -> Self {
+        let policy = ReplayPolicy::default();
         Self {
             root: root.as_ref().to_path_buf(),
             reader,
-            policy: ReplayPolicy::default(),
+            policy,
             l2_book: L2Book::new(),
-            last_seq: None,
+            sequencer: SequenceValidator::new(policy.gap),
             last_gap: None,
         }
     }
@@ -70,6 +73,15 @@ impl<R: StreamReader> ReplayEngine<R> {
 
     pub fn policy_mut(&mut self) -> &mut ReplayPolicy {
         &mut self.policy
+    }
+
+    pub fn set_policy(&mut self, policy: ReplayPolicy) {
+        self.policy = policy;
+        self.sequencer.set_policy(policy.gap);
+    }
+
+    pub fn last_seq(&self) -> Option<u64> {
+        self.sequencer.last_seq()
     }
 
     pub fn l2_book(&self) -> &L2Book {
@@ -90,8 +102,7 @@ impl<R: StreamReader> ReplayEngine<R> {
         };
 
         let applied = apply_message(
-            &self.policy,
-            &mut self.last_seq,
+            &mut self.sequencer,
             &mut self.last_gap,
             &mut self.l2_book,
             msg,
@@ -105,8 +116,7 @@ impl<R: StreamReader> ReplayEngine<R> {
         };
 
         let applied = apply_message(
-            &self.policy,
-            &mut self.last_seq,
+            &mut self.sequencer,
             &mut self.last_gap,
             &mut self.l2_book,
             msg,
@@ -134,7 +144,9 @@ impl<R: StreamReader> ReplayEngine<R> {
     ) -> Result<snapshot::SnapshotHeader> {
         let (header, payload) = snapshot::load_snapshot(path.as_ref())?;
         self.apply_snapshot_payload(&header, &payload)?;
-        self.last_seq = Some(header.seq_num);
+        // Update sequencer to expect next sequence after snapshot
+        self.sequencer.reset();
+        self.sequencer.check(header.seq_num)?;
         self.last_gap = None;
         let _ = self.reader.seek_seq(header.seq_num.saturating_add(1))?;
         Ok(header)
@@ -231,8 +243,7 @@ impl<R: StreamReader> ReplayEngine<R> {
                 return Ok(false);
             };
             let applied = apply_message(
-                &self.policy,
-                &mut self.last_seq,
+                &mut self.sequencer,
                 &mut self.last_gap,
                 &mut self.l2_book,
                 msg,
@@ -251,8 +262,7 @@ impl<R: StreamReader> ReplayEngine<R> {
                 return Ok(false);
             };
             let applied = apply_message(
-                &self.policy,
-                &mut self.last_seq,
+                &mut self.sequencer,
                 &mut self.last_gap,
                 &mut self.l2_book,
                 msg,
@@ -267,36 +277,31 @@ impl<R: StreamReader> ReplayEngine<R> {
 }
 
 fn apply_message<'a>(
-    policy: &ReplayPolicy,
-    last_seq: &mut Option<u64>,
+    sequencer: &mut SequenceValidator,
     last_gap: &mut Option<(u64, u64)>,
     l2_book: &mut L2Book,
     msg: StreamMessageRef<'a>,
 ) -> Result<AppliedMessage<'a>> {
-    if let Some(prev) = *last_seq {
-        if msg.seq != prev.wrapping_add(1) {
-            *last_gap = Some((prev, msg.seq));
-            match policy.gap {
-                GapPolicy::Panic => {
-                    return Err(anyhow!("sequence gap: {} -> {}", prev, msg.seq));
-                }
-                GapPolicy::Quarantine => {
-                    *last_seq = Some(msg.seq);
-                    return Ok(AppliedMessage {
-                        update: ReplayUpdate::Skipped {
-                            seq: msg.seq,
-                            reason: SkipReason::Gap,
-                        },
-                        book_event: None,
-                    });
-                }
-                GapPolicy::Ignore => {
-                    *last_seq = Some(msg.seq);
-                }
+    // Check sequence with the validator
+    match sequencer.check(msg.seq)? {
+        GapDetection::Sequential => {
+            // Sequence is OK, continue processing
+        }
+        GapDetection::Gap { from, to } => {
+            *last_gap = Some((from, to));
+            // Quarantine policy is handled by the validator returning Ok with Gap detection
+            if sequencer.policy() == GapPolicy::Quarantine {
+                return Ok(AppliedMessage {
+                    update: ReplayUpdate::Skipped {
+                        seq: msg.seq,
+                        reason: SkipReason::Gap,
+                    },
+                    book_event: None,
+                });
             }
+            // Ignore policy: validator already updated sequence, just continue
         }
     }
-    *last_seq = Some(msg.seq);
 
     if msg.type_id != TypeId::BookEvent.as_u16() {
         return Ok(AppliedMessage {
@@ -539,13 +544,6 @@ impl Default for ReplayPolicy {
             gap: GapPolicy::Panic,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum GapPolicy {
-    Panic,
-    Quarantine,
-    Ignore,
 }
 
 #[derive(Debug)]
