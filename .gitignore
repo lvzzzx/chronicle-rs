@@ -38,3 +38,4 @@ lcov.info
 # Backup files
 *.bak
 *.tmp
+settings.local.json

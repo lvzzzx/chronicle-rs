@@ -1,6 +1,6 @@
 //! High-level IPC communication patterns built on Chronicle queues.
 //!
-//! This module provides reusable communication patterns (pub/sub, inbox/outbox, fan-in)
+//! This module provides reusable communication patterns (pub/sub, bidirectional, fan-in)
 //! as thin, zero-cost abstractions over the low-level queue primitives in `crate::core`.
 //!
 //! # Design Philosophy
@@ -9,6 +9,7 @@
 //! - **Type Safety**: Communication patterns are encoded in types (Publisher vs Subscriber)
 //! - **Intent-Revealing API**: Code clearly expresses the communication pattern being used
 //! - **Hot Path Preservation**: No additional syscalls or allocations on the message path
+//! - **Domain-Agnostic**: Pure infrastructure with no business logic
 //!
 //! # Architecture
 //!
@@ -16,7 +17,9 @@
 //! ┌──────────────────────────────────────────────────────────┐
 //! │  Applications (feeds, strategies, routers)               │
 //! ├──────────────────────────────────────────────────────────┤
-//! │  IPC Patterns (pub/sub, inbox/outbox, fan-in) ← YOU ARE HERE
+//! │  Domain Layer (trading/, etc.)                           │
+//! ├──────────────────────────────────────────────────────────┤
+//! │  IPC Patterns (pub/sub, bidirectional, fan-in) ← YOU ARE HERE
 //! ├──────────────────────────────────────────────────────────┤
 //! │  Core Queue (segments, reader, writer)                   │
 //! └──────────────────────────────────────────────────────────┘
@@ -44,31 +47,30 @@
 //! # Ok::<(), chronicle::core::Error>(())
 //! ```
 //!
-//! ## InboxOutbox (Bidirectional SPSC)
+//! ## BidirectionalChannel (SPSC Duplex)
 //!
-//! Paired queues for request/response or bidirectional communication.
-//! Used for strategy ↔ router communication.
+//! Paired queues for bidirectional communication.
+//! Generic infrastructure - no domain knowledge.
 //!
 //! ```no_run
-//! use chronicle::ipc::inbox_outbox::InboxOutbox;
-//! use chronicle::layout::IpcLayout;
+//! use chronicle::ipc::BidirectionalChannel;
+//! use chronicle::core::{WriterConfig, ReaderConfig};
 //!
-//! let layout = IpcLayout::new("/var/lib/hft_bus");
+//! // Process A
+//! let mut channel = BidirectionalChannel::open(
+//!     "./queue_a_to_b",  // A's outbox
+//!     "./queue_b_to_a",  // A's inbox
+//!     "reader_a",
+//!     WriterConfig::default(),
+//!     ReaderConfig::default(),
+//! )?;
 //!
-//! // Strategy side
-//! let mut channel = InboxOutbox::open_strategy(&layout, "strategy_a")?;
-//! channel.send_outbound(b"new order")?;  // orders_out
-//! if let Some(msg) = channel.recv_inbound()? {  // orders_in
-//!     // Process fill/ack
+//! // Send message
+//! channel.send_outbound(0x01, b"hello")?;
+//!
+//! // Receive message
+//! if let Some(msg) = channel.recv_inbound()? {
 //!     channel.commit_inbound()?;
-//! }
-//!
-//! // Router side
-//! let mut router_channel = InboxOutbox::open_router(&layout, "strategy_a")?;
-//! if let Some(order) = router_channel.recv_inbound()? {  // reads orders_out
-//!     // Process order
-//!     router_channel.send_outbound(b"fill")?;  // writes orders_in
-//!     router_channel.commit_inbound()?;
 //! }
 //! # Ok::<(), chronicle::core::Error>(())
 //! ```
@@ -76,21 +78,19 @@
 //! ## FanIn (Many-to-One Merge)
 //!
 //! Zero-copy merge of multiple queues, ordered by timestamp.
-//! Used by router to aggregate orders from multiple strategies.
 //!
 //! ```no_run
 //! use chronicle::ipc::fanin::FanInReader;
 //! use chronicle::core::Queue;
 //!
-//! // Open multiple strategy order queues
-//! let strategy_a = Queue::open_subscriber("./orders/strategy_a/orders_out", "router")?;
-//! let strategy_b = Queue::open_subscriber("./orders/strategy_b/orders_out", "router")?;
+//! // Open multiple queues
+//! let queue_a = Queue::open_subscriber("./queue_a", "reader")?;
+//! let queue_b = Queue::open_subscriber("./queue_b", "reader")?;
 //!
-//! let mut fanin = FanInReader::new(vec![strategy_a, strategy_b])?;
+//! let mut fanin = FanInReader::new(vec![queue_a, queue_b])?;
 //!
 //! // Reads messages in timestamp order across all sources
 //! while let Some(msg) = fanin.next()? {
-//!     // msg is the earliest message across all queues
 //!     fanin.commit()?;
 //! }
 //! # Ok::<(), chronicle::core::Error>(())
@@ -100,10 +100,9 @@
 //!
 //! | Use Case | Pattern | Writer | Reader | Ordering |
 //! |----------|---------|--------|--------|----------|
-//! | Market data broadcast | PubSub | 1 | Many | Arrival |
-//! | Strategy ↔ Router | InboxOutbox | 1 each way | 1 each way | N/A |
-//! | Router fan-in | FanIn | Many | 1 | Timestamp |
-//! | Control/RPC | InboxOutbox | 1 each way | 1 each way | N/A |
+//! | Broadcast feeds | PubSub | 1 | Many | Arrival |
+//! | Duplex communication | BidirectionalChannel | 1 each way | 1 each way | N/A |
+//! | Multi-source merge | FanIn | Many | 1 | Timestamp |
 //!
 //! # Performance Characteristics
 //!
@@ -114,7 +113,6 @@
 
 pub mod bidirectional;
 pub mod fanin;
-pub mod inbox_outbox;
 pub mod pubsub;
 
 // Re-export core types needed by IPC users
@@ -126,5 +124,4 @@ pub use crate::core::{
 // Re-export pattern types
 pub use bidirectional::BidirectionalChannel;
 pub use fanin::FanInReader;
-pub use inbox_outbox::InboxOutbox;
 pub use pubsub::{Publisher, Subscriber};
