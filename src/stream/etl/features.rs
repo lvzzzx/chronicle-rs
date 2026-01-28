@@ -1,8 +1,7 @@
 use arrow::datatypes::DataType;
 
-use crate::stream::replay::{BookEvent, L2Book};
-
 use super::feature::{ColumnSpec, Feature, RowWriter};
+use super::types::{BookUpdate, OrderBook};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GlobalTime;
@@ -15,9 +14,10 @@ impl Feature for GlobalTime {
         ]
     }
 
-    fn on_event(&mut self, _book: &L2Book, event: &BookEvent<'_>, out: &mut RowWriter<'_>) {
-        out.append_u64(0, event.header.ingest_ts_ns);
-        out.append_u64(1, event.header.exchange_ts_ns);
+    fn on_event(&mut self, _book: &dyn OrderBook, event: &dyn BookUpdate, out: &mut RowWriter<'_>) {
+        let header = event.header();
+        out.append_u64(0, header.ingest_ts_ns());
+        out.append_u64(1, header.exchange_ts_ns());
     }
 }
 
@@ -28,7 +28,7 @@ pub struct MidPrice {
 }
 
 impl MidPrice {
-    fn price_factor(&mut self, book: &L2Book) -> f64 {
+    fn price_factor(&mut self, book: &dyn OrderBook) -> f64 {
         let (price_scale, _) = book.scales();
         if price_scale != self.last_scale || self.price_factor == 0.0 {
             self.last_scale = price_scale;
@@ -43,7 +43,7 @@ impl Feature for MidPrice {
         vec![ColumnSpec::new("mid_price", DataType::Float64)]
     }
 
-    fn on_event(&mut self, book: &L2Book, _event: &BookEvent<'_>, out: &mut RowWriter<'_>) {
+    fn on_event(&mut self, book: &dyn OrderBook, _event: &dyn BookUpdate, out: &mut RowWriter<'_>) {
         let Some((bid, ask)) = best_prices(book) else {
             out.append_f64(0, 0.0);
             return;
@@ -62,7 +62,7 @@ pub struct SpreadBps {
 }
 
 impl SpreadBps {
-    fn price_factor(&mut self, book: &L2Book) -> f64 {
+    fn price_factor(&mut self, book: &dyn OrderBook) -> f64 {
         let (price_scale, _) = book.scales();
         if price_scale != self.last_scale || self.price_factor == 0.0 {
             self.last_scale = price_scale;
@@ -77,7 +77,7 @@ impl Feature for SpreadBps {
         vec![ColumnSpec::new("spread_bps", DataType::Float64)]
     }
 
-    fn on_event(&mut self, book: &L2Book, _event: &BookEvent<'_>, out: &mut RowWriter<'_>) {
+    fn on_event(&mut self, book: &dyn OrderBook, _event: &dyn BookUpdate, out: &mut RowWriter<'_>) {
         let Some((bid, ask)) = best_prices(book) else {
             out.append_f64(0, 0.0);
             return;
@@ -113,9 +113,9 @@ impl Feature for BookImbalance {
         vec![ColumnSpec::new("book_imbalance", DataType::Float64)]
     }
 
-    fn on_event(&mut self, book: &L2Book, _event: &BookEvent<'_>, out: &mut RowWriter<'_>) {
-        let bid_sum = sum_depth(book.bids().iter().rev(), self.depth);
-        let ask_sum = sum_depth(book.asks().iter(), self.depth);
+    fn on_event(&mut self, book: &dyn OrderBook, _event: &dyn BookUpdate, out: &mut RowWriter<'_>) {
+        let bid_sum = sum_depth(book.bid_levels(), self.depth);
+        let ask_sum = sum_depth(book.ask_levels(), self.depth);
         let denom = bid_sum + ask_sum;
         if denom == 0 {
             out.append_f64(0, 0.0);
@@ -126,15 +126,12 @@ impl Feature for BookImbalance {
     }
 }
 
-fn best_prices(book: &L2Book) -> Option<(u64, u64)> {
-    let bid = book.bids().iter().next_back().map(|(p, _)| *p)?;
-    let ask = book.asks().iter().next().map(|(p, _)| *p)?;
+fn best_prices(book: &dyn OrderBook) -> Option<(u64, u64)> {
+    let bid = book.best_bid()?.0;
+    let ask = book.best_ask()?.0;
     Some((bid, ask))
 }
 
-fn sum_depth<'a, I>(iter: I, depth: usize) -> u64
-where
-    I: Iterator<Item = (&'a u64, &'a u64)>,
-{
-    iter.take(depth).map(|(_, size)| *size).sum()
+fn sum_depth(iter: Box<dyn Iterator<Item = (u64, u64)> + '_>, depth: usize) -> u64 {
+    iter.take(depth).map(|(_, size)| size).sum()
 }

@@ -4,7 +4,7 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use std::sync::Arc;
 
-use crate::stream::replay::{BookEvent, L2Book};
+use super::types::{BookUpdate, OrderBook};
 
 #[derive(Debug, Clone)]
 pub struct ColumnSpec {
@@ -31,28 +31,28 @@ impl ColumnSpec {
 pub trait Feature {
     fn schema(&self) -> Vec<ColumnSpec>;
 
-    fn on_event(&mut self, book: &L2Book, event: &BookEvent<'_>, out: &mut RowWriter<'_>);
+    fn on_event(&mut self, book: &dyn OrderBook, event: &dyn BookUpdate, out: &mut RowWriter<'_>);
 }
 
 pub trait FeatureSet {
     fn schema(&self) -> SchemaRef;
 
-    fn calculate(&mut self, book: &L2Book, event: &BookEvent<'_>, out: &mut RowWriter<'_>);
+    fn calculate(&mut self, book: &dyn OrderBook, event: &dyn BookUpdate, out: &mut RowWriter<'_>);
 
-    fn should_emit(&mut self, _event: &BookEvent<'_>) -> bool {
+    fn should_emit(&mut self, _event: &dyn BookUpdate) -> bool {
         true
     }
 }
 
 pub trait Trigger {
-    fn should_emit(&mut self, event: &BookEvent<'_>) -> bool;
+    fn should_emit(&mut self, event: &dyn BookUpdate) -> bool;
 }
 
 #[derive(Debug, Default)]
 pub struct AlwaysEmit;
 
 impl Trigger for AlwaysEmit {
-    fn should_emit(&mut self, _event: &BookEvent<'_>) -> bool {
+    fn should_emit(&mut self, _event: &dyn BookUpdate) -> bool {
         true
     }
 }
@@ -104,7 +104,7 @@ impl FeatureSet for FeatureGraph {
         Arc::clone(&self.schema)
     }
 
-    fn calculate(&mut self, book: &L2Book, event: &BookEvent<'_>, out: &mut RowWriter<'_>) {
+    fn calculate(&mut self, book: &dyn OrderBook, event: &dyn BookUpdate, out: &mut RowWriter<'_>) {
         let emit = out.emit();
         let buffer = out.buffer();
 
@@ -114,7 +114,7 @@ impl FeatureSet for FeatureGraph {
         }
     }
 
-    fn should_emit(&mut self, event: &BookEvent<'_>) -> bool {
+    fn should_emit(&mut self, event: &dyn BookUpdate) -> bool {
         self.trigger.should_emit(event)
     }
 }

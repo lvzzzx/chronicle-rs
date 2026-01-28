@@ -5,6 +5,7 @@ mod features;
 mod refinery;
 mod sink;
 mod triggers;
+pub mod types;
 
 pub use catalog::{SymbolCatalog, SymbolIdentity};
 pub use extractor::{Extractor, ExtractorStats};

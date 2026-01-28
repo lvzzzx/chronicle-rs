@@ -1,7 +1,7 @@
 use crate::protocol::BookEventType;
-use crate::stream::replay::BookEvent;
 
 use super::feature::Trigger;
+use super::types::BookUpdate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Timebase {
@@ -27,10 +27,11 @@ impl TimeBarTrigger {
 }
 
 impl Trigger for TimeBarTrigger {
-    fn should_emit(&mut self, event: &BookEvent<'_>) -> bool {
+    fn should_emit(&mut self, event: &dyn BookUpdate) -> bool {
+        let header = event.header();
         let ts = match self.timebase {
-            Timebase::Exchange => event.header.exchange_ts_ns,
-            Timebase::Ingest => event.header.ingest_ts_ns,
+            Timebase::Exchange => header.exchange_ts_ns(),
+            Timebase::Ingest => header.ingest_ts_ns(),
         };
         if ts == 0 {
             return false;
@@ -56,8 +57,8 @@ impl EventTypeTrigger {
 }
 
 impl Trigger for EventTypeTrigger {
-    fn should_emit(&mut self, event: &BookEvent<'_>) -> bool {
-        event.header.event_type == self.event_type as u8
+    fn should_emit(&mut self, event: &dyn BookUpdate) -> bool {
+        event.header().event_type_code() == self.event_type as u8
     }
 }
 
@@ -76,7 +77,7 @@ impl AnyTrigger {
 }
 
 impl Trigger for AnyTrigger {
-    fn should_emit(&mut self, event: &BookEvent<'_>) -> bool {
+    fn should_emit(&mut self, event: &dyn BookUpdate) -> bool {
         for trigger in &mut self.triggers {
             if trigger.should_emit(event) {
                 return true;
