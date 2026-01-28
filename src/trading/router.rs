@@ -5,7 +5,7 @@
 
 use crate::core::{MessageView, Result, ReaderConfig, WriterConfig};
 use crate::ipc::BidirectionalChannel;
-use crate::layout::IpcLayout;
+use crate::trading::paths::{strategy_orders_in_path, strategy_orders_out_path};
 use std::path::Path;
 
 /// Type ID for order messages (strategy → router).
@@ -40,17 +40,16 @@ impl RouterChannel {
     /// - `Error::Io`: Failed to open queues
     pub fn connect(root: &Path, strategy_id: impl Into<String>) -> Result<Self> {
         let strategy_id = strategy_id.into();
-        let layout = IpcLayout::new(root);
-        let orders = layout.orders();
 
-        let endpoints = orders
-            .strategy_endpoints(&crate::layout::StrategyId(strategy_id.clone()))
+        let orders_out = strategy_orders_out_path(root, &strategy_id)
+            .map_err(|_| crate::core::Error::Unsupported("invalid strategy_id"))?;
+        let orders_in = strategy_orders_in_path(root, &strategy_id)
             .map_err(|_| crate::core::Error::Unsupported("invalid strategy_id"))?;
 
         // Router reads from orders_out, writes to orders_in
         let inner = BidirectionalChannel::open(
-            &endpoints.orders_in,   // Router's outbox
-            &endpoints.orders_out,  // Router's inbox
+            &orders_in,     // Router's outbox
+            &orders_out,    // Router's inbox
             "router",
             WriterConfig::default(),
             ReaderConfig::default(),
@@ -64,17 +63,16 @@ impl RouterChannel {
     /// Returns `None` if the strategy hasn't marked itself as ready yet.
     pub fn try_connect(root: &Path, strategy_id: impl Into<String>) -> Result<Option<Self>> {
         let strategy_id = strategy_id.into();
-        let layout = IpcLayout::new(root);
-        let orders = layout.orders();
 
-        let endpoints = orders
-            .strategy_endpoints(&crate::layout::StrategyId(strategy_id.clone()))
+        let orders_out = strategy_orders_out_path(root, &strategy_id)
+            .map_err(|_| crate::core::Error::Unsupported("invalid strategy_id"))?;
+        let orders_in = strategy_orders_in_path(root, &strategy_id)
             .map_err(|_| crate::core::Error::Unsupported("invalid strategy_id"))?;
 
         // Try to open (strategy might not be ready yet)
         match BidirectionalChannel::try_open(
-            &endpoints.orders_in,   // Router's outbox
-            &endpoints.orders_out,  // Router's inbox
+            &orders_in,     // Router's outbox
+            &orders_out,    // Router's inbox
             "router",
             WriterConfig::default(),
             ReaderConfig::default(),
@@ -119,22 +117,19 @@ impl RouterChannel {
 mod tests {
     use super::*;
     use crate::core::Queue;
-    use crate::layout::IpcLayout;
+    use crate::trading::paths::{strategy_orders_in_path, strategy_orders_out_path};
     use crate::trading::strategy::StrategyChannel;
     use tempfile::TempDir;
 
     #[test]
     fn test_router_channel_creation() {
         let dir = TempDir::new().unwrap();
-        let layout = IpcLayout::new(dir.path());
-        let orders = layout.orders();
-        let endpoints = orders
-            .strategy_endpoints(&crate::layout::StrategyId("test_strategy".to_string()))
-            .unwrap();
 
         // Pre-create both queues
-        Queue::open_publisher(&endpoints.orders_out).unwrap();
-        Queue::open_publisher(&endpoints.orders_in).unwrap();
+        let orders_out = strategy_orders_out_path(dir.path(), "test_strategy").unwrap();
+        let orders_in = strategy_orders_in_path(dir.path(), "test_strategy").unwrap();
+        Queue::open_publisher(&orders_out).unwrap();
+        Queue::open_publisher(&orders_in).unwrap();
 
         // Strategy must connect first to create the queues
         let _strategy = StrategyChannel::connect(dir.path(), "test_strategy").unwrap();
@@ -155,15 +150,12 @@ mod tests {
     #[test]
     fn test_router_recv_order() {
         let dir = TempDir::new().unwrap();
-        let layout = IpcLayout::new(dir.path());
-        let orders = layout.orders();
-        let endpoints = orders
-            .strategy_endpoints(&crate::layout::StrategyId("test_strategy".to_string()))
-            .unwrap();
 
         // Pre-create both queues
-        Queue::open_publisher(&endpoints.orders_out).unwrap();
-        Queue::open_publisher(&endpoints.orders_in).unwrap();
+        let orders_out = strategy_orders_out_path(dir.path(), "test_strategy").unwrap();
+        let orders_in = strategy_orders_in_path(dir.path(), "test_strategy").unwrap();
+        Queue::open_publisher(&orders_out).unwrap();
+        Queue::open_publisher(&orders_in).unwrap();
 
         // Strategy sends order
         let mut strategy = StrategyChannel::connect(dir.path(), "test_strategy").unwrap();
