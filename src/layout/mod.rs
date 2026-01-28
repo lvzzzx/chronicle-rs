@@ -48,10 +48,6 @@ impl IpcLayout {
     pub fn streams(&self) -> StreamsLayout {
         StreamsLayout::new(&self.root)
     }
-
-    pub fn orders(&self) -> OrdersLayout {
-        OrdersLayout::new(&self.root)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -108,43 +104,6 @@ impl StreamsLayout {
         Ok(self
             .clean_queue_dir(venue, symbol, stream)?
             .join(segment_file_name(segment_id)))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct StrategyId(pub String);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StrategyEndpoints {
-    pub orders_out: PathBuf,
-    pub orders_in: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-pub struct OrdersLayout {
-    root: PathBuf,
-}
-
-impl OrdersLayout {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
-    }
-
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    pub fn orders_root(&self) -> PathBuf {
-        self.root.join("orders").join("queue")
-    }
-
-    pub fn strategy_endpoints(&self, id: &StrategyId) -> Result<StrategyEndpoints> {
-        validate_component("strategy_id", &id.0)?;
-        let base = self.orders_root().join(&id.0);
-        Ok(StrategyEndpoints {
-            orders_out: base.join("orders_out"),
-            orders_in: base.join("orders_in"),
-        })
     }
 }
 
@@ -418,22 +377,6 @@ mod tests {
             .stream_dir("binance", "btc-usdt", "20260124", "trades")
             .unwrap_err();
         assert!(matches!(err, LayoutError::InvalidDate { .. }));
-    }
-
-    #[test]
-    fn orders_endpoints_path() {
-        let layout = IpcLayout::new("/tmp/bus").orders();
-        let endpoints = layout
-            .strategy_endpoints(&StrategyId("alpha".to_string()))
-            .expect("orders endpoints");
-        assert_eq!(
-            endpoints.orders_out,
-            PathBuf::from("/tmp/bus/orders/queue/alpha/orders_out")
-        );
-        assert_eq!(
-            endpoints.orders_in,
-            PathBuf::from("/tmp/bus/orders/queue/alpha/orders_in")
-        );
     }
 
     #[test]
