@@ -226,4 +226,203 @@ impl<R: StreamReader> MessageSource for ReplayEngine<R> {
     }
 }
 
+// ============================================================================
+// Test utilities
+// ============================================================================
+
+#[cfg(test)]
+pub mod test_utils {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Mock order book for testing features in isolation.
+    #[derive(Debug, Clone)]
+    pub struct MockOrderBook {
+        pub bids: BTreeMap<u64, u64>,
+        pub asks: BTreeMap<u64, u64>,
+        pub price_scale: u8,
+        pub size_scale: u8,
+    }
+
+    impl MockOrderBook {
+        pub fn new() -> Self {
+            Self {
+                bids: BTreeMap::new(),
+                asks: BTreeMap::new(),
+                price_scale: 4,
+                size_scale: 0,
+            }
+        }
+
+        pub fn with_scales(price_scale: u8, size_scale: u8) -> Self {
+            Self {
+                bids: BTreeMap::new(),
+                asks: BTreeMap::new(),
+                price_scale,
+                size_scale,
+            }
+        }
+
+        pub fn add_bid(&mut self, price: u64, size: u64) {
+            self.bids.insert(price, size);
+        }
+
+        pub fn add_ask(&mut self, price: u64, size: u64) {
+            self.asks.insert(price, size);
+        }
+    }
+
+    impl Default for MockOrderBook {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl OrderBook for MockOrderBook {
+        fn best_bid(&self) -> Option<(u64, u64)> {
+            self.bids.iter().next_back().map(|(&p, &s)| (p, s))
+        }
+
+        fn best_ask(&self) -> Option<(u64, u64)> {
+            self.asks.iter().next().map(|(&p, &s)| (p, s))
+        }
+
+        fn bid_levels(&self) -> Box<dyn Iterator<Item = (u64, u64)> + '_> {
+            Box::new(self.bids.iter().rev().map(|(&p, &s)| (p, s)))
+        }
+
+        fn ask_levels(&self) -> Box<dyn Iterator<Item = (u64, u64)> + '_> {
+            Box::new(self.asks.iter().map(|(&p, &s)| (p, s)))
+        }
+
+        fn scales(&self) -> (u8, u8) {
+            (self.price_scale, self.size_scale)
+        }
+    }
+
+    /// Mock event header for testing.
+    #[derive(Debug, Clone)]
+    pub struct MockEventHeader {
+        pub venue_id: u16,
+        pub market_id: u32,
+        pub exchange_ts_ns: u64,
+        pub ingest_ts_ns: u64,
+        pub event_type_code: u8,
+        pub seq: u64,
+    }
+
+    impl MockEventHeader {
+        pub fn new() -> Self {
+            Self {
+                venue_id: 0,
+                market_id: 0,
+                exchange_ts_ns: 0,
+                ingest_ts_ns: 0,
+                event_type_code: 0,
+                seq: 0,
+            }
+        }
+
+        pub fn with_timestamps(exchange_ts_ns: u64, ingest_ts_ns: u64) -> Self {
+            Self {
+                venue_id: 0,
+                market_id: 0,
+                exchange_ts_ns,
+                ingest_ts_ns,
+                event_type_code: 0,
+                seq: 0,
+            }
+        }
+    }
+
+    impl Default for MockEventHeader {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl EventHeader for MockEventHeader {
+        fn venue_id(&self) -> u16 {
+            self.venue_id
+        }
+
+        fn market_id(&self) -> u32 {
+            self.market_id
+        }
+
+        fn exchange_ts_ns(&self) -> u64 {
+            self.exchange_ts_ns
+        }
+
+        fn ingest_ts_ns(&self) -> u64 {
+            self.ingest_ts_ns
+        }
+
+        fn event_type_code(&self) -> u8 {
+            self.event_type_code
+        }
+
+        fn seq(&self) -> u64 {
+            self.seq
+        }
+    }
+
+    /// Mock book update for testing.
+    #[derive(Debug)]
+    pub struct MockBookUpdate {
+        pub header: MockEventHeader,
+        pub is_snapshot: bool,
+        pub is_diff: bool,
+        pub is_reset: bool,
+        pub is_heartbeat: bool,
+    }
+
+    impl MockBookUpdate {
+        pub fn new(header: MockEventHeader) -> Self {
+            Self {
+                header,
+                is_snapshot: false,
+                is_diff: true,
+                is_reset: false,
+                is_heartbeat: false,
+            }
+        }
+
+        pub fn snapshot(header: MockEventHeader) -> Self {
+            Self {
+                header,
+                is_snapshot: true,
+                is_diff: false,
+                is_reset: false,
+                is_heartbeat: false,
+            }
+        }
+    }
+
+    impl BookUpdate for MockBookUpdate {
+        fn header(&self) -> &dyn EventHeader {
+            &self.header
+        }
+
+        fn is_snapshot(&self) -> bool {
+            self.is_snapshot
+        }
+
+        fn is_diff(&self) -> bool {
+            self.is_diff
+        }
+
+        fn is_reset(&self) -> bool {
+            self.is_reset
+        }
+
+        fn is_heartbeat(&self) -> bool {
+            self.is_heartbeat
+        }
+
+        fn is_supported(&self) -> bool {
+            true
+        }
+    }
+}
 

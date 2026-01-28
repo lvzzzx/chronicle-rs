@@ -135,3 +135,196 @@ fn best_prices(book: &dyn OrderBook) -> Option<(u64, u64)> {
 fn sum_depth(iter: Box<dyn Iterator<Item = (u64, u64)> + '_>, depth: usize) -> u64 {
     iter.take(depth).map(|(_, size)| size).sum()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stream::etl::types::test_utils::{MockBookUpdate, MockEventHeader, MockOrderBook};
+    use crate::stream::etl::feature::{Feature, RowBuffer, RowWriter};
+    use arrow::datatypes::Schema;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_global_time_feature() {
+        let mut feature = GlobalTime;
+        let schema = feature.schema();
+        assert_eq!(schema.len(), 2);
+        assert_eq!(schema[0].name, "ingest_ts_ns");
+        assert_eq!(schema[1].name, "exchange_ts_ns");
+
+        let fields: Vec<_> = schema.iter().map(|c| arrow::datatypes::Field::new(&c.name, c.data_type.clone(), c.nullable)).collect();
+        let schema = Arc::new(Schema::new(fields));
+        let mut buffer = RowBuffer::new(schema, 10).unwrap();
+
+        let book = MockOrderBook::new();
+        let header = MockEventHeader::with_timestamps(1000000000, 2000000000);
+        let event = MockBookUpdate::new(header);
+
+        let mut writer = RowWriter::new(&mut buffer, true);
+        feature.on_event(&book, &event, &mut writer);
+        buffer.commit_row();
+
+        assert_eq!(buffer.row_count(), 1);
+    }
+
+    #[test]
+    fn test_mid_price_empty_book() {
+        let mut feature = MidPrice::default();
+        let schema = feature.schema();
+        let fields: Vec<_> = schema.iter().map(|c| arrow::datatypes::Field::new(&c.name, c.data_type.clone(), c.nullable)).collect();
+        let schema = Arc::new(Schema::new(fields));
+        let mut buffer = RowBuffer::new(schema, 10).unwrap();
+
+        let book = MockOrderBook::new();
+        let header = MockEventHeader::new();
+        let event = MockBookUpdate::new(header);
+
+        let mut writer = RowWriter::new(&mut buffer, true);
+        feature.on_event(&book, &event, &mut writer);
+        buffer.commit_row();
+
+        assert_eq!(buffer.row_count(), 1);
+    }
+
+    #[test]
+    fn test_mid_price_calculation() {
+        let mut feature = MidPrice::default();
+        let schema = feature.schema();
+        let fields: Vec<_> = schema.iter().map(|c| arrow::datatypes::Field::new(&c.name, c.data_type.clone(), c.nullable)).collect();
+        let schema = Arc::new(Schema::new(fields));
+        let mut buffer = RowBuffer::new(schema, 10).unwrap();
+
+        let mut book = MockOrderBook::with_scales(4, 0);
+        // bid: 100000 (10.0000), ask: 100010 (10.0010)
+        book.add_bid(100000, 100);
+        book.add_ask(100010, 100);
+
+        let header = MockEventHeader::new();
+        let event = MockBookUpdate::new(header);
+
+        let mut writer = RowWriter::new(&mut buffer, true);
+        feature.on_event(&book, &event, &mut writer);
+        buffer.commit_row();
+
+        assert_eq!(buffer.row_count(), 1);
+        // Mid should be (10.0000 + 10.0010) / 2 = 10.0005
+    }
+
+    #[test]
+    fn test_spread_bps_empty_book() {
+        let mut feature = SpreadBps::default();
+        let schema = feature.schema();
+        let fields: Vec<_> = schema.iter().map(|c| arrow::datatypes::Field::new(&c.name, c.data_type.clone(), c.nullable)).collect();
+        let schema = Arc::new(Schema::new(fields));
+        let mut buffer = RowBuffer::new(schema, 10).unwrap();
+
+        let book = MockOrderBook::new();
+        let header = MockEventHeader::new();
+        let event = MockBookUpdate::new(header);
+
+        let mut writer = RowWriter::new(&mut buffer, true);
+        feature.on_event(&book, &event, &mut writer);
+        buffer.commit_row();
+
+        assert_eq!(buffer.row_count(), 1);
+    }
+
+    #[test]
+    fn test_spread_bps_calculation() {
+        let mut feature = SpreadBps::default();
+        let schema = feature.schema();
+        let fields: Vec<_> = schema.iter().map(|c| arrow::datatypes::Field::new(&c.name, c.data_type.clone(), c.nullable)).collect();
+        let schema = Arc::new(Schema::new(fields));
+        let mut buffer = RowBuffer::new(schema, 10).unwrap();
+
+        let mut book = MockOrderBook::with_scales(4, 0);
+        // bid: 100000 (10.0000), ask: 100100 (10.0100)
+        book.add_bid(100000, 100);
+        book.add_ask(100100, 100);
+
+        let header = MockEventHeader::new();
+        let event = MockBookUpdate::new(header);
+
+        let mut writer = RowWriter::new(&mut buffer, true);
+        feature.on_event(&book, &event, &mut writer);
+        buffer.commit_row();
+
+        assert_eq!(buffer.row_count(), 1);
+        // Spread: (10.0100 - 10.0000) / 10.0050 * 10000 ≈ 99.95 bps
+    }
+
+    #[test]
+    fn test_book_imbalance_empty_book() {
+        let mut feature = BookImbalance::new(5);
+        let schema = feature.schema();
+        let fields: Vec<_> = schema.iter().map(|c| arrow::datatypes::Field::new(&c.name, c.data_type.clone(), c.nullable)).collect();
+        let schema = Arc::new(Schema::new(fields));
+        let mut buffer = RowBuffer::new(schema, 10).unwrap();
+
+        let book = MockOrderBook::new();
+        let header = MockEventHeader::new();
+        let event = MockBookUpdate::new(header);
+
+        let mut writer = RowWriter::new(&mut buffer, true);
+        feature.on_event(&book, &event, &mut writer);
+        buffer.commit_row();
+
+        assert_eq!(buffer.row_count(), 1);
+    }
+
+    #[test]
+    fn test_book_imbalance_balanced() {
+        let mut feature = BookImbalance::new(3);
+        let schema = feature.schema();
+        let fields: Vec<_> = schema.iter().map(|c| arrow::datatypes::Field::new(&c.name, c.data_type.clone(), c.nullable)).collect();
+        let schema = Arc::new(Schema::new(fields));
+        let mut buffer = RowBuffer::new(schema, 10).unwrap();
+
+        let mut book = MockOrderBook::new();
+        // 3 bid levels with 100 size each
+        book.add_bid(99, 100);
+        book.add_bid(98, 100);
+        book.add_bid(97, 100);
+        // 3 ask levels with 100 size each
+        book.add_ask(100, 100);
+        book.add_ask(101, 100);
+        book.add_ask(102, 100);
+
+        let header = MockEventHeader::new();
+        let event = MockBookUpdate::new(header);
+
+        let mut writer = RowWriter::new(&mut buffer, true);
+        feature.on_event(&book, &event, &mut writer);
+        buffer.commit_row();
+
+        assert_eq!(buffer.row_count(), 1);
+        // Imbalance should be 0 (balanced)
+    }
+
+    #[test]
+    fn test_book_imbalance_bid_heavy() {
+        let mut feature = BookImbalance::new(2);
+        let schema = feature.schema();
+        let fields: Vec<_> = schema.iter().map(|c| arrow::datatypes::Field::new(&c.name, c.data_type.clone(), c.nullable)).collect();
+        let schema = Arc::new(Schema::new(fields));
+        let mut buffer = RowBuffer::new(schema, 10).unwrap();
+
+        let mut book = MockOrderBook::new();
+        // 2 bid levels with more size
+        book.add_bid(99, 200);
+        book.add_bid(98, 200);
+        // 2 ask levels with less size
+        book.add_ask(100, 100);
+        book.add_ask(101, 100);
+
+        let header = MockEventHeader::new();
+        let event = MockBookUpdate::new(header);
+
+        let mut writer = RowWriter::new(&mut buffer, true);
+        feature.on_event(&book, &event, &mut writer);
+        buffer.commit_row();
+
+        assert_eq!(buffer.row_count(), 1);
+        // Imbalance: (400 - 200) / 600 = 0.333...
+    }
+}
