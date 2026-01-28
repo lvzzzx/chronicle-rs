@@ -112,6 +112,7 @@
 //! - **Throughput**: No degradation vs direct queue usage
 //! - **Abstractions**: Compile-time only, zero runtime cost
 
+pub mod bidirectional;
 pub mod fanin;
 pub mod inbox_outbox;
 pub mod pubsub;
@@ -123,6 +124,7 @@ pub use crate::core::{
 };
 
 // Re-export pattern types
+pub use bidirectional::BidirectionalChannel;
 pub use fanin::FanInReader;
 pub use inbox_outbox::InboxOutbox;
 pub use pubsub::{Publisher, Subscriber};
