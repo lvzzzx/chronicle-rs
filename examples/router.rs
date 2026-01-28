@@ -3,9 +3,9 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chronicle::bus::{mark_ready, DiscoveryEvent, RouterDiscovery, StrategyId};
+use chronicle::bus::mark_ready;
+use chronicle::trading::{DiscoveryEvent, RouterDiscovery, StrategyId};
 use chronicle::core::{Queue, QueueReader, QueueWriter};
-use chronicle::layout::IpcLayout;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -15,10 +15,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let bus_root = parse_bus_root(&args)?;
-    let layout = IpcLayout::new(&bus_root).orders();
-    let mut discovery = RouterDiscovery::new(layout)?;
+    let mut discovery = RouterDiscovery::new(&bus_root)?;
 
-    println!("router: bus_root={}", discovery.layout().root().display());
+    println!("router: bus_root={}", discovery.root().display());
 
     let mut handles: HashMap<StrategyId, StrategyHandle> = HashMap::new();
 
@@ -38,7 +37,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                     let endpoints = discovery
-                        .layout()
                         .strategy_endpoints(&strategy)
                         .expect("invalid strategy id for orders endpoints");
                     let reader = Queue::open_subscriber(&orders_out, "router")?;

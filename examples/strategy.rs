@@ -2,7 +2,8 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chronicle::bus::{mark_ready, StrategyId};
+use chronicle::bus::mark_ready;
+use chronicle::trading::{strategy_orders_in_path, strategy_orders_out_path};
 use chronicle::stream::merge::FanInReader;
 use chronicle::core::{Error, Queue, QueueReader};
 use chronicle::layout::IpcLayout;
@@ -15,38 +16,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let options = parse_args(&args)?;
-    let strategy_id = StrategyId(options.strategy.clone());
-    let ipc = IpcLayout::new(&options.bus_root);
-    let orders = ipc.orders();
-    let endpoints = orders
-        .strategy_endpoints(&strategy_id)
-        .expect("invalid strategy id for orders endpoints");
+    let strategy_id = &options.strategy;
+
+    // Get order queue paths using trading module
+    let orders_out = strategy_orders_out_path(&options.bus_root, strategy_id)
+        .map_err(|e| format!("invalid strategy_id: {}", e))?;
+    let orders_in = strategy_orders_in_path(&options.bus_root, strategy_id)
+        .map_err(|e| format!("invalid strategy_id: {}", e))?;
 
     println!(
         "strategy {}: bus_root={} symbol={}",
-        strategy_id.0,
+        strategy_id,
         options.bus_root.display(),
         options.symbol
     );
 
+    // Still use IpcLayout for feed paths (streams are generic infrastructure)
+    let ipc = IpcLayout::new(&options.bus_root);
     let feed_path = ipc
         .streams()
         .raw_queue_dir("market_data")
         .expect("invalid venue for raw queue path");
 
-    let reader_name = format!("reader_{}", strategy_id.0);
+    let reader_name = format!("reader_{}", strategy_id);
     let feed_reader = open_subscriber_retry(&feed_path, &reader_name)?;
 
     // Use FanInReader to listen to both Feed (source 0) and OrdersIn (source 1, eventually)
     let mut fanin = FanInReader::new(vec![feed_reader]);
     let mut orders_in_connected = false;
 
-    let mut orders_out_writer = Queue::open_publisher(&endpoints.orders_out)?;
-    mark_ready(&endpoints.orders_out)?;
+    let mut orders_out_writer = Queue::open_publisher(&orders_out)?;
+    mark_ready(&orders_out)?;
     println!(
         "strategy {}: READY {}",
-        strategy_id.0,
-        endpoints.orders_out.display()
+        strategy_id,
+        orders_out.display()
     );
 
     let mut order_seq: u64 = 0;
@@ -69,13 +73,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             options.symbol
                         );
                         orders_out_writer.append(2, payload.as_bytes())?;
-                        println!("strategy {}: order {payload}", strategy_id.0);
+                        println!("strategy {}: order {payload}", strategy_id);
                         order_seq = order_seq.wrapping_add(1);
                     }
                 }
                 1 => {
                     // Order Acks (once connected)
-                    println!("strategy {}: ack {text}", strategy_id.0);
+                    println!("strategy {}: ack {text}", strategy_id);
                 }
                 _ => {}
             }
@@ -86,12 +90,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Discovery logic for Orders In channel
         if !orders_in_connected {
-            match Queue::open_subscriber(&endpoints.orders_in, &reader_name) {
+            match Queue::open_subscriber(&orders_in, &reader_name) {
                 Ok(reader) => {
                     println!(
                         "strategy {}: attached to {}",
-                        strategy_id.0,
-                        endpoints.orders_in.display()
+                        strategy_id,
+                        orders_in.display()
                     );
                     fanin.add_reader(reader);
                     orders_in_connected = true;

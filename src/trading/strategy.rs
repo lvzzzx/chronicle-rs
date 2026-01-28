@@ -42,9 +42,9 @@ impl StrategyChannel {
         let strategy_id = strategy_id.into();
 
         let orders_out = strategy_orders_out_path(root, &strategy_id)
-            .map_err(|e| crate::core::Error::Unsupported("invalid strategy_id"))?;
+            .map_err(|_| crate::core::Error::Unsupported("invalid strategy_id"))?;
         let orders_in = strategy_orders_in_path(root, &strategy_id)
-            .map_err(|e| crate::core::Error::Unsupported("invalid strategy_id"))?;
+            .map_err(|_| crate::core::Error::Unsupported("invalid strategy_id"))?;
 
         // Strategy writes to orders_out, reads from orders_in
         let inner = BidirectionalChannel::open(

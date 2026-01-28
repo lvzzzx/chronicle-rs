@@ -167,12 +167,66 @@
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    FOUNDATION MODULES (Unchanged)                           │
+│                          TRADING MODULE                                     │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │ trading/  [DOMAIN LAYER]                                              │ │
+│  │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │ │
+│  │                                                                       │ │
+│  │  ┌─────────────────────────────────────────────────────────────────┐ │ │
+│  │  │ trading/paths.rs  [PATH CONVENTIONS]                            │ │ │
+│  │  │ ───────────────────────────────────────────────────────────────  │ │ │
+│  │  │ Functions:                                                       │ │ │
+│  │  │   • strategy_orders_out_path(root, strategy_id)                 │ │ │
+│  │  │   • strategy_orders_in_path(root, strategy_id)                  │ │ │
+│  │  │   • validate_component() - Path traversal prevention            │ │ │
+│  │  └─────────────────────────────────────────────────────────────────┘ │ │
+│  │                                                                       │ │
+│  │  ┌─────────────────────────────────────────────────────────────────┐ │ │
+│  │  │ trading/strategy.rs  [STRATEGY-SIDE CHANNEL]                    │ │ │
+│  │  │ ───────────────────────────────────────────────────────────────  │ │ │
+│  │  │ • StrategyChannel: Domain wrapper over BidirectionalChannel     │ │ │
+│  │  │   - send_order(order: &[u8])                                    │ │ │
+│  │  │   - recv_fill() -> MessageView                                  │ │ │
+│  │  │   - commit_fill()                                               │ │ │
+│  │  └─────────────────────────────────────────────────────────────────┘ │ │
+│  │                                                                       │ │
+│  │  ┌─────────────────────────────────────────────────────────────────┐ │ │
+│  │  │ trading/router.rs  [ROUTER-SIDE CHANNEL]                        │ │ │
+│  │  │ ───────────────────────────────────────────────────────────────  │ │ │
+│  │  │ • RouterChannel: Domain wrapper over BidirectionalChannel       │ │ │
+│  │  │   - recv_order() -> MessageView                                 │ │ │
+│  │  │   - send_fill(fill: &[u8])                                      │ │ │
+│  │  │   - commit_order()                                              │ │ │
+│  │  │   - try_connect() - Non-blocking discovery                      │ │ │
+│  │  └─────────────────────────────────────────────────────────────────┘ │ │
+│  │                                                                       │ │
+│  │  ┌─────────────────────────────────────────────────────────────────┐ │ │
+│  │  │ trading/discovery.rs  [SERVICE DISCOVERY]                       │ │ │
+│  │  │ ───────────────────────────────────────────────────────────────  │ │ │
+│  │  │ • RouterDiscovery: Discover strategies marked as ready          │ │ │
+│  │  │   - poll() -> Vec<DiscoveryEvent>                               │ │ │
+│  │  │   - strategy_endpoints(strategy_id) -> StrategyEndpoints        │ │ │
+│  │  │ • StrategyId: Unique strategy identifier                        │ │ │
+│  │  │ • DiscoveryEvent: Added { strategy, orders_out } | Removed      │ │ │
+│  │  └─────────────────────────────────────────────────────────────────┘ │ │
+│  │                                                                       │ │
+│  │ Uses: ipc::BidirectionalChannel, bus::is_ready, bus::mark_ready     │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    FOUNDATION MODULES                                       │
 │                                                                             │
 │  • core/       - Queue (SWMR), Writer, Reader, Segment management          │
-│  • ipc/        - IPC abstractions (fanin, pubsub, inbox/outbox)            │
+│  • ipc/        - Generic IPC patterns (BidirectionalChannel, PubSub,       │
+│                  FanIn) - Pure infrastructure, no domain knowledge          │
+│  • trading/    - Trading domain abstractions (StrategyChannel,             │
+│                  RouterChannel, RouterDiscovery) - Built on IPC patterns   │
+│  • bus/        - Process orchestration (SubscriberDiscovery, ready,        │
+│                  lease, registration) - Generic coordination primitives    │
 │  • storage/    - Archive storage with block compression                    │
-│  • layout/     - Filesystem path conventions                               │
+│  • layout/     - Filesystem path conventions (generic infrastructure)      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -211,6 +265,48 @@ Application
                     │
                     └──serializes──► [BookEventHeader + L2Snapshot + Levels]
 ```
+
+### Pattern 4: Trading Domain (Layered Architecture)
+```
+Strategy Process                      Router Process
+      │                                     │
+      ▼                                     ▼
+[StrategyChannel]                   [RouterChannel]
+      │                                     │
+      └──────uses──────► [BidirectionalChannel] ◄──────uses──────┘
+                                │
+                         (Generic IPC layer)
+
+Router Process (Discovery)
+      │
+      ▼
+[RouterDiscovery] ──scans──► [strategy_orders_out_path/READY]
+      │                               │
+      │                        (readiness marker)
+      ▼
+[DiscoveryEvent::Added] ──contains──► [StrategyId, orders_out path]
+```
+
+Architecture Layers:
+```
+┌───────────────────────────────────────────────┐
+│  Application (Strategy/Router binaries)       │
+├───────────────────────────────────────────────┤
+│  trading/ (StrategyChannel, RouterChannel)    │  ← Domain Layer
+├───────────────────────────────────────────────┤
+│  ipc/ (BidirectionalChannel, PubSub, FanIn)   │  ← Generic Infrastructure
+├───────────────────────────────────────────────┤
+│  core/ (Queue, Writer, Reader)                │  ← Queue Primitives
+└───────────────────────────────────────────────┘
+```
+
+Key Design Principles:
+- **Domain Separation**: trading/ contains business logic, ipc/ is reusable
+- **Zero-Cost Abstractions**: Trading wrappers compile to direct queue operations
+- **Type Safety**: StrategyChannel vs RouterChannel prevent endpoint confusion
+- **Composition**: Complex patterns built from simple primitives
+  - Example: N-to-1 router hub = HashMap<StrategyId, RouterChannel> + FanInReader
+
 
 ## Cross-Cutting Concerns
 

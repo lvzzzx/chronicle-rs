@@ -70,10 +70,12 @@
 //! # Ok::<(), chronicle::core::Error>(())
 //! ```
 
+pub mod discovery;
 pub mod paths;
 pub mod router;
 pub mod strategy;
 
+pub use discovery::{DiscoveryEvent, RouterDiscovery, StrategyEndpoints, StrategyId};
 pub use paths::{
     clean_stream_path, orders_root_path, raw_feed_path, strategy_orders_in_path,
     strategy_orders_out_path, validate_component, PathError,

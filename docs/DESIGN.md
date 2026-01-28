@@ -52,13 +52,18 @@ Guiding principle: chronicle::bus must remain a small utility layer. Anything th
 
 2.2.1 IPC communication patterns: chronicle::ipc (zero-cost semantic wrappers)
 
-The IPC layer bridges the gap between the raw queue primitive (core) and application-level communication. It provides reusable patterns (pub/sub, inbox/outbox, fan-in) as zero-cost abstractions that encode communication semantics in types.
+The IPC layer bridges the gap between the raw queue primitive (core) and application-level communication. It provides reusable patterns (pub/sub, bidirectional, fan-in) as zero-cost abstractions that encode communication semantics in types.
 
 Responsibilities:
 	•	Publisher/Subscriber wrappers for broadcast (SPMC) messaging
-	•	InboxOutbox for bidirectional SPSC communication (strategy ↔ router)
+	•	BidirectionalChannel for duplex SPSC communication (generic infrastructure)
 	•	FanInReader for timestamp-ordered merge of multiple queues
 	•	Type-safe APIs that make communication intent explicit
+
+The trading module builds on IPC patterns to provide domain-specific abstractions:
+	•	StrategyChannel: Domain wrapper for strategy-side order flow
+	•	RouterChannel: Domain wrapper for router-side order processing
+	•	RouterDiscovery: Service discovery for dynamic strategy connections
 
 Design Constraints:
 	•	Zero runtime cost: all abstractions compile away
@@ -154,8 +159,10 @@ Dependencies must flow downward only (higher layers may depend on lower layers; 
 
 Layer boundaries:
     - core (ULL queue primitive): mmap segments, append protocol, reader offsets, wait strategy, retention.
-    - ipc (communication patterns): pub/sub, inbox/outbox, fan-in; zero-cost wrappers over core.
-    - bus (control helpers): layout conventions, discovery, readiness/lease markers.
+    - ipc (communication patterns): pub/sub, bidirectional, fan-in; zero-cost wrappers over core (generic infrastructure).
+    - trading (domain layer): StrategyChannel, RouterChannel, RouterDiscovery; builds on ipc patterns.
+    - bus (control helpers): discovery, readiness/lease markers, generic orchestration.
+    - layout (path conventions): filesystem layout conventions (generic infrastructure).
     - protocol (stable schema): binary types, TypeId, versioning, flags.
     - ingest (adapters/importers): map third-party sources into protocol and append to queues.
     - stream (replay engines): L2/L3 state replay, trade table, feature extraction.
@@ -175,7 +182,7 @@ The IPC layer provides reusable communication patterns as zero-cost abstractions
 
 Design Principles:
     - Zero-Cost Abstractions: All wrappers compile away; no runtime overhead.
-    - Type Safety: Communication patterns encoded in types (Publisher vs Subscriber vs InboxOutbox).
+    - Type Safety: Communication patterns encoded in types (Publisher vs Subscriber vs BidirectionalChannel).
     - Intent-Revealing API: Code clearly expresses the communication pattern being used.
     - Hot Path Preservation: No additional syscalls or allocations on the message path.
 
@@ -205,34 +212,67 @@ Available Patterns:
    - Each subscriber tracks its own committed position
    - Retention waits for all live subscribers
 
-2. InboxOutbox (Bidirectional SPSC)
-   Architecture: Paired queues for request/response or bidirectional communication.
-   Use Case: Strategy ↔ Router (orders out, fills/acks in).
+2. BidirectionalChannel (Generic Duplex SPSC)
+   Architecture: Paired queues for bidirectional SPSC communication (generic infrastructure).
+   Use Case: Any duplex communication pattern (trading uses this via StrategyChannel/RouterChannel).
 
-   Example:
+   Example (Generic):
    ```rust
-   // Strategy side
-   let mut channel = InboxOutbox::open_strategy(&layout, "strategy_A")?;
-   channel.send_outbound(0x01, b"new order")?;  // orders_out
-   if let Some(fill) = channel.recv_inbound()? {  // orders_in
-       process_fill(fill);
-       channel.commit_inbound()?;
+   use chronicle::ipc::BidirectionalChannel;
+   use chronicle::core::{WriterConfig, ReaderConfig};
+
+   // Process A
+   let mut channel_a = BidirectionalChannel::open(
+       "./queue_a_to_b",  // A's outbox
+       "./queue_b_to_a",  // A's inbox
+       "reader_a",
+       WriterConfig::default(),
+       ReaderConfig::default(),
+   )?;
+
+   channel_a.send_outbound(0x01, b"message")?;
+   if let Some(msg) = channel_a.recv_inbound()? {
+       process_message(msg);
+       channel_a.commit_inbound()?;
    }
 
-   // Router side
-   let mut router_channel = InboxOutbox::open_router(&layout, "strategy_A")?;
-   if let Some(order) = router_channel.recv_inbound()? {  // reads orders_out
+   // Process B (symmetric)
+   let mut channel_b = BidirectionalChannel::open(
+       "./queue_b_to_a",  // B's outbox (A's inbox)
+       "./queue_a_to_b",  // B's inbox (A's outbox)
+       "reader_b",
+       WriterConfig::default(),
+       ReaderConfig::default(),
+   )?;
+   ```
+
+   Trading Domain Usage:
+   ```rust
+   use chronicle::trading::{StrategyChannel, RouterChannel};
+
+   // Strategy side (domain-specific wrapper)
+   let mut strategy = StrategyChannel::connect("./bus", "strategy_A")?;
+   strategy.send_order(b"BUY 100 AAPL")?;
+   if let Some(fill) = strategy.recv_fill()? {
+       process_fill(fill);
+       strategy.commit_fill()?;
+   }
+
+   // Router side (domain-specific wrapper)
+   let mut router = RouterChannel::connect("./bus", "strategy_A")?;
+   if let Some(order) = router.recv_order()? {
        route_order(order);
-       router_channel.send_outbound(0x02, b"filled")?;  // writes orders_in
-       router_channel.commit_inbound()?;
+       router.send_fill(b"FILLED 100 AAPL @ 150.00")?;
+       router.commit_order()?;
    }
    ```
 
    Semantics:
-   - Two queues: strategy_A/orders_out and strategy_A/orders_in
+   - Two queues forming a bidirectional pair
    - Each side has one writer (outbox) and one reader (inbox)
    - One side's outbox is the other side's inbox
    - Independent commit tracking for each direction
+   - Generic infrastructure; domain semantics provided by wrappers (trading/ module)
 
 3. FanIn (Many-to-One Merge)
    Architecture: Timestamp-ordered merge of multiple queues.
@@ -266,9 +306,11 @@ Pattern Selection Guide:
 | Use Case | Pattern | Writer | Reader | Ordering |
 |----------|---------|--------|--------|----------|
 | Market data broadcast | PubSub | 1 | Many | Arrival |
-| Strategy ↔ Router | InboxOutbox | 1 each way | 1 each way | N/A |
+| Duplex communication | BidirectionalChannel | 1 each way | 1 each way | N/A |
 | Router fan-in | FanIn | Many | 1 | Timestamp |
-| Control/RPC | InboxOutbox | 1 each way | 1 each way | N/A |
+| Strategy ↔ Router | StrategyChannel/RouterChannel* | 1 each way | 1 each way | N/A |
+
+*StrategyChannel/RouterChannel are domain wrappers in the trading module over BidirectionalChannel.
 
 Performance Characteristics:
     - Latency: Same as core::Queue (~200ns zero-syscall, ~1-2µs wake)
@@ -798,16 +840,32 @@ while let Some(msg) = strategy.recv()? {
     strategy.commit()?;
 }
 
-// InboxOutbox (Bidirectional SPSC)
-use chronicle::ipc::inbox_outbox::InboxOutbox;
-use chronicle::layout::IpcLayout;
+// InboxOutbox (Bidirectional SPSC) - Now BidirectionalChannel
+use chronicle::ipc::BidirectionalChannel;
+use chronicle::core::{WriterConfig, ReaderConfig};
 
-let layout = IpcLayout::new("/var/lib/hft_bus");
-let mut channel = InboxOutbox::open_strategy(&layout, "strategy_A")?;
-channel.send_outbound(0x01, b"order")?;
-if let Some(fill) = channel.recv_inbound()? {
-    process_fill(fill);
+let mut channel = BidirectionalChannel::open(
+    "./my_outbox",
+    "./my_inbox",
+    "my_reader",
+    WriterConfig::default(),
+    ReaderConfig::default(),
+)?;
+channel.send_outbound(0x01, b"message")?;
+if let Some(msg) = channel.recv_inbound()? {
+    process_message(msg);
     channel.commit_inbound()?;
+}
+
+// Trading domain wrappers
+use chronicle::trading::{StrategyChannel, RouterChannel};
+
+// Strategy side
+let mut strategy = StrategyChannel::connect("./bus", "strategy_A")?;
+strategy.send_order(b"BUY 100 AAPL")?;
+if let Some(fill) = strategy.recv_fill()? {
+    process_fill(fill);
+    strategy.commit_fill()?;
 }
 
 // FanIn (Many-to-One Merge)
@@ -1082,11 +1140,22 @@ chronicle-rs/
 │   ├── ipc/
 │   │   ├── mod.rs
 │   │   ├── pubsub.rs
-│   │   ├── inbox_outbox.rs
+│   │   ├── bidirectional.rs
 │   │   └── fanin.rs
+│   ├── trading/
+│   │   ├── mod.rs
+│   │   ├── paths.rs
+│   │   ├── strategy.rs
+│   │   ├── router.rs
+│   │   └── discovery.rs
 │   ├── protocol/
 │   ├── layout/
 │   ├── bus/
+│   │   ├── discovery/
+│   │   │   └── subscriber.rs
+│   │   ├── ready.rs
+│   │   ├── lease.rs
+│   │   └── registration.rs
 │   ├── stream/
 │   ├── ingest/
 │   └── storage/
