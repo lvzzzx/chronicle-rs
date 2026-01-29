@@ -7,6 +7,7 @@ pub mod clock;
 pub mod control;
 pub mod error;
 pub mod header;
+pub mod log;
 pub mod mmap;
 pub mod reader;
 pub mod retention;
@@ -19,6 +20,7 @@ mod writer_lock;
 pub use clock::{Clock, QuantaClock, SystemClock};
 pub use error::{Error, Result};
 pub use header::MSG_VERSION;
+pub use log::{LogReader, LogWriter};
 pub use reader::{
     DisconnectReason, MessageView, OwnedMessage, QueueReader, ReaderConfig, StartMode,
     WaitStrategy, WriterStatus,
