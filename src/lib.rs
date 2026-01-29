@@ -1,4 +1,5 @@
 pub mod core;
+pub mod lifecycle;
 pub mod table;
 #[cfg(feature = "bus")]
 pub mod bus;
