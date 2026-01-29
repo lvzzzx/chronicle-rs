@@ -56,16 +56,22 @@ use std::path::{Path, PathBuf};
 
 use crate::core::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, RECORD_ALIGN};
 use crate::core::mmap::MmapFile;
-use crate::core::segment::{
-    prepare_segment_temp, publish_segment, seal_segment, segment_path, segment_temp_path,
-    validate_segment_size, DEFAULT_SEGMENT_SIZE, SEG_DATA_OFFSET,
-};
+use crate::core::segment_store::{discover_segments, next_segment_id, segment_path, DEFAULT_SEGMENT_SIZE, SEG_DATA_OFFSET};
+use crate::core::segment_writer::SegmentWriter;
 use crate::core::{Error, MessageView, Result};
+
+/// Aligns a value up to the nearest multiple of `align`.
+#[inline]
+fn align_up(val: usize, align: usize) -> usize {
+    (val + align - 1) & !(align - 1)
+}
 
 /// Append-only log writer with automatic segment rolling.
 ///
 /// Writes records sequentially to segments, automatically rolling to a new
 /// segment when the current one fills up.
+///
+/// Built on top of `SegmentWriter` primitive.
 ///
 /// # Example
 ///
@@ -79,14 +85,7 @@ use crate::core::{Error, MessageView, Result};
 /// # Ok::<(), chronicle::core::Error>(())
 /// ```
 pub struct LogWriter {
-    dir: PathBuf,
-    segment_size: usize,
-    segment_id: u64,
-    write_offset: u64,
-    seq: u64,
-    mmap: Option<MmapFile>,
-    segments_written: u64,
-    has_records: bool,
+    writer: SegmentWriter,
 }
 
 impl LogWriter {
@@ -100,39 +99,32 @@ impl LogWriter {
     /// # Errors
     ///
     /// - `Error::Io`: Failed to create directory or open segment
-    /// - `Error::InvalidInput`: Invalid segment size
+    /// - `Error::Unsupported`: Invalid segment size
     pub fn open(dir: impl AsRef<Path>, segment_size: usize) -> Result<Self> {
-        let dir = dir.as_ref().to_path_buf();
+        let dir = dir.as_ref();
         let segment_size = if segment_size == 0 {
             DEFAULT_SEGMENT_SIZE
         } else {
-            validate_segment_size(segment_size as u64)? as usize
+            let validated = crate::core::segment::validate_segment_size(segment_size as u64)?;
+            validated as usize
         };
 
-        std::fs::create_dir_all(&dir)?;
+        std::fs::create_dir_all(dir)?;
 
-        let segment_id = next_segment_id(&dir)?;
+        let segment_id = next_segment_id(dir)?;
+        let writer = SegmentWriter::new(dir, segment_id, segment_size);
 
-        Ok(Self {
-            dir,
-            segment_size,
-            segment_id,
-            write_offset: SEG_DATA_OFFSET as u64,
-            seq: 0,
-            mmap: None,
-            segments_written: 0,
-            has_records: false,
-        })
+        Ok(Self { writer })
     }
 
     /// Returns the number of segments written (sealed and published).
     pub fn segments_written(&self) -> u64 {
-        self.segments_written
+        self.writer.segments_published()
     }
 
     /// Returns the current sequence number.
     pub fn seq(&self) -> u64 {
-        self.seq
+        self.writer.seq()
     }
 
     /// Append a record to the log.
@@ -157,126 +149,27 @@ impl LogWriter {
         }
 
         let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
-        let max_payload = self.segment_size.saturating_sub(SEG_DATA_OFFSET);
-        if record_len > max_payload {
-            return Err(Error::PayloadTooLarge);
-        }
-
-        // Ensure we have a segment
-        self.ensure_segment()?;
 
         // Roll if record doesn't fit
-        if (self.write_offset as usize) + record_len > self.segment_size {
-            self.roll_segment()?;
-            self.ensure_segment()?;
+        if self.writer.needs_roll(record_len) {
+            self.writer.roll()?;
         }
 
-        let offset = self.write_offset as usize;
-        let mmap = self.mmap.as_mut().ok_or(Error::Corrupt("segment mmap missing"))?;
-
-        // Write payload
-        if payload_len > 0 {
-            mmap.range_mut(offset + HEADER_SIZE, payload_len)?
-                .copy_from_slice(payload);
-        }
-
-        // Write header
-        let checksum = MessageHeader::crc32(payload);
-        let header = MessageHeader::new_uncommitted(self.seq, timestamp_ns, type_id, 0, checksum);
-        let header_bytes = header.to_bytes();
-        mmap.range_mut(offset, HEADER_SIZE)?
-            .copy_from_slice(&header_bytes);
-
-        // Commit the record
-        let commit_len = MessageHeader::commit_len_for_payload(payload_len)?;
-        let header_ptr = unsafe { mmap.as_mut_slice().as_mut_ptr().add(offset) };
-        MessageHeader::store_commit_len(header_ptr, commit_len);
-
-        self.seq = self.seq.wrapping_add(1);
-        self.write_offset = self
-            .write_offset
-            .checked_add(record_len as u64)
-            .ok_or(Error::Corrupt("write offset overflow"))?;
-        self.has_records = true;
-
-        Ok(())
+        self.writer.append(type_id, timestamp_ns, payload)
     }
 
     /// Flush pending writes to disk asynchronously.
     ///
     /// Ensures writes are visible but not necessarily durable.
     pub fn flush(&mut self) -> Result<()> {
-        if let Some(mmap) = &mut self.mmap {
-            mmap.flush_async()?;
-        }
-        Ok(())
+        self.writer.flush()
     }
 
     /// Finish writing and seal the current segment.
     ///
     /// Should be called when done writing to properly close the log.
     pub fn finish(&mut self) -> Result<()> {
-        if !self.has_records {
-            // Clean up empty temp segment
-            if let Some(mmap) = self.mmap.take() {
-                drop(mmap);
-                let temp_path = segment_temp_path(&self.dir, self.segment_id);
-                let _ = std::fs::remove_file(temp_path);
-            }
-            return Ok(());
-        }
-
-        self.publish_current()
-    }
-
-    fn ensure_segment(&mut self) -> Result<()> {
-        if self.mmap.is_some() {
-            return Ok(());
-        }
-
-        let mmap = prepare_segment_temp(&self.dir, self.segment_id, self.segment_size)?;
-        self.write_offset = SEG_DATA_OFFSET as u64;
-        self.has_records = false;
-        self.mmap = Some(mmap);
-        Ok(())
-    }
-
-    fn roll_segment(&mut self) -> Result<()> {
-        if self.has_records {
-            self.publish_current()?;
-        } else if let Some(mmap) = self.mmap.take() {
-            drop(mmap);
-            let temp_path = segment_temp_path(&self.dir, self.segment_id);
-            let _ = std::fs::remove_file(temp_path);
-        }
-
-        self.segment_id = self.segment_id.saturating_add(1);
-        self.write_offset = SEG_DATA_OFFSET as u64;
-        self.mmap = None;
-        self.has_records = false;
-        Ok(())
-    }
-
-    fn publish_current(&mut self) -> Result<()> {
-        let mut mmap = self.mmap.take().ok_or(Error::Corrupt("segment mmap missing"))?;
-        seal_segment(&mut mmap)?;
-        mmap.flush_async()?;
-        let temp_path = segment_temp_path(&self.dir, self.segment_id);
-        let final_path = segment_path(&self.dir, self.segment_id);
-        publish_segment(&temp_path, &final_path)?;
-        self.segments_written = self.segments_written.saturating_add(1);
-        Ok(())
-    }
-}
-
-impl Drop for LogWriter {
-    fn drop(&mut self) {
-        // Clean up temp segment if not finished properly
-        if self.mmap.is_some() {
-            let _ = self.mmap.take();
-            let temp_path = segment_temp_path(&self.dir, self.segment_id);
-            let _ = std::fs::remove_file(temp_path);
-        }
+        self.writer.finish()
     }
 }
 
@@ -450,97 +343,19 @@ impl LogReader {
         let segment_id = self.segments[self.current_segment_idx];
         let path = segment_path(&self.dir, segment_id);
 
+        if !path.exists() {
+            // Skip missing segments
+            self.current_segment_idx += 1;
+            self.offset = SEG_DATA_OFFSET;
+            return self.load_next_segment();
+        }
+
         let mmap = MmapFile::open(&path)?;
         self.current_mmap = Some(mmap);
         self.offset = SEG_DATA_OFFSET;
 
         Ok(true)
     }
-}
-
-/// Find the next segment ID by scanning the directory.
-fn next_segment_id(dir: &Path) -> Result<u64> {
-    let mut max_id: Option<u64> = None;
-
-    if dir.exists() {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-
-            let path = entry.path();
-            let file_name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(name) => name,
-                None => continue,
-            };
-
-            // Match *.q files (not *.q.tmp)
-            if !file_name.ends_with(".q") || file_name.ends_with(".q.tmp") {
-                continue;
-            }
-
-            let base = match file_name.strip_suffix(".q") {
-                Some(base) => base,
-                None => continue,
-            };
-
-            if !base.chars().all(|c| c.is_ascii_digit()) {
-                continue;
-            }
-
-            if let Ok(id) = base.parse::<u64>() {
-                max_id = Some(max_id.map_or(id, |cur| cur.max(id)));
-            }
-        }
-    }
-
-    Ok(max_id.map_or(0, |id| id.saturating_add(1)))
-}
-
-/// Discover all segment IDs in a directory.
-fn discover_segments(dir: &Path) -> Result<Vec<u64>> {
-    let mut segments = Vec::new();
-
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-
-        let path = entry.path();
-        let file_name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name,
-            None => continue,
-        };
-
-        // Match *.q files (not *.q.tmp)
-        if !file_name.ends_with(".q") || file_name.ends_with(".q.tmp") {
-            continue;
-        }
-
-        let base = match file_name.strip_suffix(".q") {
-            Some(base) => base,
-            None => continue,
-        };
-
-        if !base.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-
-        if let Ok(id) = base.parse::<u64>() {
-            segments.push(id);
-        }
-    }
-
-    Ok(segments)
-}
-
-fn align_up(value: usize, align: usize) -> usize {
-    if align == 0 {
-        return value;
-    }
-    (value + align - 1) & !(align - 1)
 }
 
 #[cfg(test)]
