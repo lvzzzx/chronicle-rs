@@ -8,7 +8,6 @@ pub mod live;
 pub mod merge;
 pub mod replay;
 pub mod sequencer;
-#[cfg(feature = "storage")]
 pub mod archive;
 
 pub use live::LiveStream;

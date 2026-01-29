@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::io::Write;
 
-use chronicle::storage::zstd_seek::read_seek_index;
-use chronicle::storage::{compress_q_to_zst, ZstdBlockReader};
+use chronicle::core::compression::read_seek_index;
+use chronicle::core::compression::{compress_q_to_zst, ZstdBlockReader};
 use tempfile::tempdir;
 
 #[test]

@@ -1,4 +1,4 @@
-use chronicle::etl::SymbolCatalog;
+use chronicle::stream::etl::SymbolCatalog;
 
 #[test]
 fn resolves_symbol_versions_by_event_time() {
