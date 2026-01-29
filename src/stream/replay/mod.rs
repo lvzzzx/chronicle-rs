@@ -33,8 +33,8 @@ pub struct ReplayEngine<R: StreamReader> {
 }
 
 pub type LiveReplayEngine = ReplayEngine<LiveStream>;
-#[cfg(feature = "storage")]
-pub type ArchiveReplayEngine = ReplayEngine<crate::stream::archive::ArchiveStream>;
+// #[cfg(feature = "storage")]
+// pub type ArchiveReplayEngine = ReplayEngine<crate::stream::archive::ArchiveStream>; // REMOVED: storage module deleted
 
 impl ReplayEngine<LiveStream> {
     pub fn open(path: impl AsRef<Path>, reader: &str) -> Result<Self> {

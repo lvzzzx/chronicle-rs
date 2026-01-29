@@ -19,7 +19,5 @@ pub mod layout;
 pub mod trading;
 #[cfg(feature = "protocol")]
 pub mod protocol;
-#[cfg(feature = "storage")]
-pub mod storage;
 
 pub use core::*;

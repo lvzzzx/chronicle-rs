@@ -1,3 +1,11 @@
+//! Tardis CSV import module.
+//!
+//! **BROKEN**: This module needs to be migrated to use `table::Table` instead of
+//! the removed `storage::ArchiveWriter`. The code is commented out pending migration.
+
+// compile_error!("tardis_csv import requires migration to table::Table (storage module removed)");
+
+/*
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -14,7 +22,7 @@ use crate::protocol::{
     book_flags, BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate,
     TypeId, PROTOCOL_VERSION,
 };
-use crate::storage::{write_meta_at_if_missing, ArchiveWriter, MetaFile, TierConfig, TierManager};
+// REMOVED: use crate::storage::{write_meta_at_if_missing, ArchiveWriter, MetaFile, TierConfig, TierManager};
 
 #[derive(Debug, Clone)]
 pub struct ImportStats {
@@ -752,3 +760,4 @@ const POW10: [u64; 19] = [
     100_000_000_000_000_000,
     1_000_000_000_000_000_000,
 ];
+*/

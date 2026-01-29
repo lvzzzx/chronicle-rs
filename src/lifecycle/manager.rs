@@ -3,12 +3,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
-use crate::core::segment::SEG_FLAG_SEALED;
+use crate::core::segment::{read_segment_flags, SEG_FLAG_SEALED};
 use crate::core::Result;
 use crate::lifecycle::{
     compress_segment, should_compress, AccessTracker, LifecycleStats, SegmentInfo,
 };
-use crate::storage::read_segment_flags;
 use crate::table::CompressionPolicy;
 
 /// Configuration for lifecycle management.

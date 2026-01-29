@@ -12,8 +12,8 @@ pub mod sequencer;
 pub mod archive;
 
 pub use live::LiveStream;
-#[cfg(feature = "storage")]
-pub use archive::ArchiveStream;
+// #[cfg(feature = "storage")]
+// pub use archive::ArchiveStream; // REMOVED: storage module deleted
 
 #[derive(Debug, Clone, Copy)]
 pub struct StreamMessageRef<'a> {

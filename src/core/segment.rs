@@ -493,6 +493,25 @@ fn reader_meta_crc(payload: &[u8]) -> u32 {
     hasher.finalize()
 }
 
+/// Read segment flags from a segment file.
+///
+/// Validates magic and version before returning flags.
+pub fn read_segment_flags(path: &Path) -> Result<u32> {
+    let mut file = File::open(path)?;
+    let mut buf = [0u8; 64];
+    file.read_exact(&mut buf)?;
+    let magic = u32::from_le_bytes(buf[0..4].try_into().expect("slice length"));
+    let version = u32::from_le_bytes(buf[4..8].try_into().expect("slice length"));
+    let flags = u32::from_le_bytes(buf[12..16].try_into().expect("slice length"));
+    if magic != SEG_MAGIC {
+        return Err(Error::Corrupt("segment magic mismatch"));
+    }
+    if version != SEG_VERSION {
+        return Err(Error::UnsupportedVersion(version));
+    }
+    Ok(flags)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
