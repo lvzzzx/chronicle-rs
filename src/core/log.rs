@@ -131,6 +131,16 @@ impl LogWriter {
         self.writer.seq()
     }
 
+    /// Returns the current segment ID.
+    pub fn segment_id(&self) -> u64 {
+        self.writer.segment_id()
+    }
+
+    /// Returns the current write offset within the segment.
+    pub fn write_offset(&self) -> u64 {
+        self.writer.write_offset()
+    }
+
     /// Append a record to the log.
     ///
     /// If the record doesn't fit in the current segment, automatically rolls

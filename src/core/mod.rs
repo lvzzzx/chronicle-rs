@@ -16,6 +16,7 @@ pub mod segment;
 pub mod segment_cursor;
 pub mod segment_store;
 pub mod segment_writer;
+pub mod timeseries;
 pub mod wait;
 pub mod writer;
 mod writer_lock;
@@ -29,5 +30,6 @@ pub use reader::{
     WaitStrategy, WriterStatus,
 };
 pub use retention::RetentionConfig;
+pub use timeseries::{SeekResult, TimeSeriesReader, TimeSeriesWriter};
 pub use writer::{BackpressurePolicy, Queue, QueueWriter, WriterConfig, WriterMetrics};
 pub use writer_lock::{lock_owner_alive, read_lock_info, WriterLockInfo};
