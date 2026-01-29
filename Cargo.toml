@@ -39,29 +39,9 @@ url = { version = "2.4", optional = true }
 zstd = { version = "0.13", optional = true }
 
 [features]
-default = ["bus", "protocol", "ingest", "stream", "storage", "cli"]
+default = ["bus", "protocol", "stream", "cli"]
 bus = []
 protocol = []
-ingest = [
-    "protocol",
-    "bus",
-    "storage",
-    "dep:blake3",
-    "dep:clap",
-    "dep:core_affinity",
-    "dep:csv",
-    "dep:env_logger",
-    "dep:flate2",
-    "dep:futures-util",
-    "dep:reqwest",
-    "dep:serde",
-    "dep:serde_json",
-    "dep:simd-json",
-    "dep:time",
-    "dep:tokio",
-    "dep:tokio-tungstenite",
-    "dep:url",
-]
 stream = [
     "protocol",
     "dep:arrow",
@@ -71,14 +51,6 @@ stream = [
     "dep:parquet",
     "dep:serde",
     "dep:serde_json",
-]
-storage = [
-    "bus",
-    "dep:clap",
-    "dep:serde",
-    "dep:serde_json",
-    "dep:time",
-    "dep:zstd",
 ]
 cli = [
     "bus",
@@ -135,36 +107,6 @@ path = "src/bin/chronicle_etl.rs"
 required-features = ["stream"]
 
 [[bin]]
-name = "chronicle-feed-binance"
-path = "src/bin/chronicle_feed_binance.rs"
-required-features = ["ingest"]
-
-[[bin]]
 name = "snapshotter"
 path = "src/bin/snapshotter.rs"
 required-features = ["stream"]
-
-[[bin]]
-name = "tier"
-path = "src/bin/tier.rs"
-required-features = ["storage"]
-
-[[bin]]
-name = "chronicle-raw-archiver"
-path = "src/bin/chronicle_raw_archiver.rs"
-required-features = ["storage"]
-
-[[bin]]
-name = "chronicle-csv-import"
-path = "src/bin/chronicle_csv_import.rs"
-required-features = ["ingest"]
-
-[[bin]]
-name = "chronicle-szse-import"
-path = "src/bin/chronicle_szse_import.rs"
-required-features = ["ingest"]
-
-[[bin]]
-name = "chronicle-szse-recon"
-path = "src/bin/chronicle_szse_recon.rs"
-required-features = ["stream", "storage"]
