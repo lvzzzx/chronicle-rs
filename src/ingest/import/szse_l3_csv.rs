@@ -219,7 +219,7 @@ pub fn import_szse_l3_channel(
 
     if compress {
         let stream_dir = szse_channel_dir(archive_root, date, stats.channel)?;
-        let tier = TierManager::new(TierConfig::new(stream_dir));
+        let mut tier = TierManager::new(TierConfig::new(stream_dir));
         tier.run_once()?;
     }
 

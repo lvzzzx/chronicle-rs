@@ -1,3 +1,21 @@
+//! Archive writer for legacy IPC use cases.
+//!
+//! **DEPRECATED**: This module is deprecated in favor of `table::Table` with
+//! flexible partitioning and compression policies.
+//!
+//! For new code, use:
+//! ```ignore
+//! use chronicle::table::{Table, PartitionScheme, TableConfig};
+//!
+//! let scheme = PartitionScheme::new()
+//!     .add_string("venue")
+//!     .add_string("symbol")
+//!     .add_date("date")
+//!     .add_string("stream");
+//!
+//! let table = Table::create("./archive", scheme, TableConfig::default())?;
+//! ```
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
@@ -10,6 +28,10 @@ use crate::core::segment::{
 };
 use crate::layout::ArchiveLayout;
 
+/// Archive writer for stream-based IPC data.
+///
+/// **DEPRECATED**: Use `table::Table` instead for new code.
+#[deprecated(since = "0.2.0", note = "Use table::Table instead")]
 pub struct ArchiveWriter {
     stream_dir: PathBuf,
     segment_size: usize,

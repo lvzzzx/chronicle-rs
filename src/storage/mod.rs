@@ -5,6 +5,7 @@ mod raw_archiver;
 mod tier;
 
 pub use access::{ResolvedStorage, StorageReader, StorageResolver, StorageTier};
+#[deprecated(since = "0.2.0", note = "Use table::Table instead")]
 pub use archive_writer::ArchiveWriter;
 pub use meta::{read_segment_flags, write_meta_at_if_missing, MetaFile};
 pub use raw_archiver::{RawArchiver, RawArchiverConfig};

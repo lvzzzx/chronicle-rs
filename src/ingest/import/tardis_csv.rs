@@ -244,7 +244,7 @@ pub fn import_tardis_incremental_book(
         let stream_dir = layout
             .stream_dir(venue, symbol, date, stream)
             .map_err(|e| anyhow!(e))?;
-        let tier = TierManager::new(TierConfig::new(stream_dir));
+        let mut tier = TierManager::new(TierConfig::new(stream_dir));
         tier.run_once()?;
     }
 

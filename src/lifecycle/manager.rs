@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
 use crate::core::segment::SEG_FLAG_SEALED;
-use crate::core::{Error, Result};
+use crate::core::Result;
 use crate::lifecycle::{
     compress_segment, should_compress, AccessTracker, LifecycleStats, SegmentInfo,
 };
