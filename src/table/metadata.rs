@@ -2,7 +2,7 @@
 //!
 //! Handles storage and retrieval of table metadata including partition scheme.
 
-use crate::core::timeseries::PartitionScheme;
+use crate::table::PartitionScheme;
 use crate::core::{Error, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -89,7 +89,7 @@ fn current_timestamp_ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::timeseries::PartitionScheme;
+    use crate::table::PartitionScheme;
     use tempfile::TempDir;
 
     #[test]

@@ -50,6 +50,7 @@
 //! # Ok::<(), chronicle::core::Error>(())
 //! ```
 
+mod config;
 mod log;
 mod metadata;
 mod partition;
@@ -57,6 +58,9 @@ mod rolling;
 mod rollers;
 mod table;
 mod table_reader;
+
+// Re-export config types
+pub use config::{CompressionPolicy, TableConfig};
 
 // Re-export log types
 pub use log::{SeekResult, TimeSeriesReader, TimeSeriesWriter};
@@ -66,5 +70,5 @@ pub use metadata::TableMetadata;
 pub use partition::{PartitionKey, PartitionScheme, PartitionValue, PartitionValues};
 pub use rolling::{RollingStats, RollingWriter};
 pub use rollers::{DateRoller, HourRoller, MinuteRoller, PartitionRoller, Timezone};
-pub use table::{PartitionInfo, PartitionWriter, Table, TableConfig};
+pub use table::{PartitionInfo, PartitionWriter, Table};
 pub use table_reader::{MergeStrategy, PartitionFilter, TableReader};

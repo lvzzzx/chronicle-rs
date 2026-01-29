@@ -2,10 +2,10 @@
 //!
 //! Provides automatic partition switching based on message content.
 
-use crate::core::timeseries::{
+use crate::table::{
     PartitionValues, Table, TimeSeriesWriter,
 };
-use crate::core::timeseries::rollers::PartitionRoller;
+use crate::table::rollers::PartitionRoller;
 use crate::core::Result;
 
 /// Statistics for a rolling write session.
@@ -168,7 +168,7 @@ impl RollingWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::timeseries::{DateRoller, PartitionScheme, Timezone};
+    use crate::table::{DateRoller, PartitionScheme, Timezone};
     use tempfile::TempDir;
 
     #[test]

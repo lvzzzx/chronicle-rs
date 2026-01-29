@@ -2,7 +2,7 @@
 //!
 //! Provides strategies for determining partition values from message timestamp.
 
-use crate::core::timeseries::{PartitionScheme, PartitionValues};
+use crate::table::{PartitionScheme, PartitionValues};
 use crate::core::{Error, Result};
 
 /// Timezone for date/time partitioning.
@@ -261,7 +261,7 @@ fn is_leap_year(year: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::timeseries::PartitionValue;
+    use crate::table::PartitionValue;
 
     #[test]
     fn test_timezone_offset() {

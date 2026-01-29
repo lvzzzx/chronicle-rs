@@ -2,7 +2,7 @@
 //!
 //! Provides querying across multiple partitions with timestamp-ordered merge.
 
-use crate::core::timeseries::{PartitionInfo, PartitionValues, Table, TimeSeriesReader};
+use crate::table::{PartitionInfo, PartitionValues, Table, TimeSeriesReader};
 use crate::core::{MessageView, Result};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -325,7 +325,7 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::timeseries::PartitionScheme;
+    use crate::table::PartitionScheme;
     use tempfile::TempDir;
 
     #[test]

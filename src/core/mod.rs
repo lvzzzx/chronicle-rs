@@ -12,12 +12,11 @@ pub mod log;
 pub mod mmap;
 pub mod reader;
 pub mod retention;
-mod seek_index;
+pub mod seek_index;
 pub mod segment;
 pub mod segment_cursor;
 pub mod segment_store;
 pub mod segment_writer;
-pub mod timeseries;
 pub mod wait;
 pub mod writer;
 mod writer_lock;
@@ -31,6 +30,8 @@ pub use reader::{
     WaitStrategy, WriterStatus,
 };
 pub use retention::RetentionConfig;
-pub use timeseries::{SeekResult, TimeSeriesReader, TimeSeriesWriter};
 pub use writer::{BackpressurePolicy, Queue, QueueWriter, WriterConfig, WriterMetrics};
 pub use writer_lock::{lock_owner_alive, read_lock_info, WriterLockInfo};
+
+// Re-export timeseries types from table module for backward compatibility
+pub use crate::table::{SeekResult, TimeSeriesReader, TimeSeriesWriter};

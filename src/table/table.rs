@@ -2,32 +2,14 @@
 //!
 //! Provides partitioned time-series tables with automatic partition management.
 
-use crate::core::timeseries::{
-    PartitionScheme, PartitionValues, RollingWriter, TableMetadata,
+use crate::table::{
+    PartitionScheme, PartitionValues, RollingWriter, TableConfig, TableMetadata,
     TimeSeriesReader, TimeSeriesWriter,
 };
-use crate::core::timeseries::rollers::PartitionRoller;
+use crate::table::rollers::PartitionRoller;
 use crate::core::{Error, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-/// Table configuration.
-#[derive(Debug, Clone)]
-pub struct TableConfig {
-    /// Segment size for time-series logs (default: 128MB).
-    pub segment_size: usize,
-    /// Index stride for timestamp seeking (default: 4096 records).
-    pub index_stride: u32,
-}
-
-impl Default for TableConfig {
-    fn default() -> Self {
-        Self {
-            segment_size: 128 * 1024 * 1024, // 128MB
-            index_stride: 4096,
-        }
-    }
-}
 
 /// Partition information.
 #[derive(Debug, Clone)]
@@ -224,7 +206,7 @@ impl Table {
         date_key: &str,
         static_values: PartitionValues,
     ) -> Result<RollingWriter> {
-        use crate::core::timeseries::{DateRoller, Timezone};
+        use crate::table::{DateRoller, Timezone};
 
         // Find date key in scheme
         let date_key_def = self
@@ -239,7 +221,7 @@ impl Table {
 
         // Extract timezone from date key
         let timezone = match date_key_def {
-            crate::core::timeseries::PartitionKey::Date { timezone, .. } => {
+            crate::table::PartitionKey::Date { timezone, .. } => {
                 timezone.as_deref().unwrap_or("UTC")
             }
             _ => {
@@ -339,8 +321,8 @@ impl Table {
         key: &str,
         value: &str,
         depth: usize,
-    ) -> Result<crate::core::timeseries::PartitionValue> {
-        use crate::core::timeseries::{PartitionKey, PartitionValue};
+    ) -> Result<crate::table::PartitionValue> {
+        use crate::table::{PartitionKey, PartitionValue};
 
         let key_def = self
             .metadata
@@ -426,7 +408,7 @@ impl PartitionWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::timeseries::PartitionScheme;
+    use crate::table::PartitionScheme;
     use tempfile::TempDir;
 
     #[test]
