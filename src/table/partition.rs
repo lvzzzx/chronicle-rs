@@ -281,6 +281,20 @@ impl PartitionValues {
         parts.join("/")
     }
 
+    /// Convert to Hive-style path string without scheme validation.
+    ///
+    /// This is a convenience method for display purposes. It sorts keys
+    /// alphabetically and formats them as "key=value/key=value".
+    pub fn to_path_string(&self) -> String {
+        let mut pairs: Vec<_> = self.0.iter().collect();
+        pairs.sort_by_key(|(k, _)| k.as_str());
+        pairs
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
     /// Parse from Hive-style path.
     pub fn from_path(path: &str) -> Result<Self> {
         let mut values = HashMap::new();

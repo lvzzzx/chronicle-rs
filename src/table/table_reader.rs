@@ -144,8 +144,8 @@ struct PartitionReader {
 impl TableReader {
     /// Create a new table reader.
     ///
-    /// Users should use `Table::query()` instead.
-    pub(crate) fn new(
+    /// Users should use `Table::query()` or `Table::query_with_strategy()` instead.
+    pub fn new(
         table: &Table,
         filter: PartitionFilter,
         strategy: MergeStrategy,
