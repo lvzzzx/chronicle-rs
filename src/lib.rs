@@ -9,8 +9,6 @@ pub mod cli;
 pub mod stream;
 #[cfg(feature = "stream")]
 pub mod venues;
-#[cfg(feature = "ingest")]
-pub mod ingest;
 #[cfg(feature = "bus")]
 pub mod ipc;
 #[cfg(feature = "bus")]
