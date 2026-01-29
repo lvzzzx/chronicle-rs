@@ -34,7 +34,7 @@ pub enum GapDetection {
 ///
 /// # Example
 /// ```ignore
-/// use chronicle::stream::sequencer::{SequenceValidator, GapPolicy, GapDetection};
+/// use chronicle::core::sequencer::{SequenceValidator, GapPolicy, GapDetection};
 ///
 /// let mut validator = SequenceValidator::new(GapPolicy::Panic);
 ///

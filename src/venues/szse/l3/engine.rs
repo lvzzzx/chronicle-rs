@@ -9,7 +9,7 @@ use crate::protocol::{
     l3_flags, BookEventHeader, BookEventType, BookMode, L3Event, L3EventType, L3Side, TypeId,
 };
 use crate::stream::StreamMessageView;
-use crate::stream::sequencer::{GapPolicy, SequenceValidator};
+use crate::core::sequencer::{GapPolicy, SequenceValidator};
 
 #[derive(Debug, Clone, Copy)]
 pub enum DecodePolicy {

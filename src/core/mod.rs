@@ -17,6 +17,7 @@ pub mod segment;
 pub mod segment_cursor;
 pub mod segment_store;
 pub mod segment_writer;
+pub mod sequencer;
 pub mod wait;
 pub mod writer;
 mod writer_lock;

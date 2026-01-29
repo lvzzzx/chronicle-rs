@@ -1,10 +1,9 @@
-use crate::core::{ReaderConfig, WaitStrategy};
+use crate::core::{Queue, QueueReader, ReaderConfig, WaitStrategy};
 use crate::protocol::{
     BookEventHeader, BookEventType, BookMode, L2Diff, L2Snapshot, PriceLevelUpdate, TypeId,
 };
-use crate::stream::live::LiveStream;
 use crate::stream::{StreamMessageRef, StreamReader};
-use crate::stream::sequencer::{GapDetection, SequenceValidator};
+use crate::core::sequencer::{GapDetection, SequenceValidator};
 use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,7 +20,7 @@ pub use sink::{Sink, QueueSink, NullSink, VecSink};
 pub use sink::CsvSink;
 pub use pipeline::{ReplayPipeline, ReplayStats};
 pub use parallel::{MultiSymbolReplay, SymbolHandler, WorkerStats, MultiReplayStats};
-pub use crate::stream::sequencer::GapPolicy;
+pub use crate::core::sequencer::GapPolicy;
 
 pub struct ReplayEngine<R: StreamReader> {
     root: PathBuf,
@@ -32,14 +31,63 @@ pub struct ReplayEngine<R: StreamReader> {
     last_gap: Option<(u64, u64)>,
 }
 
-pub type LiveReplayEngine = ReplayEngine<LiveStream>;
+pub type LiveReplayEngine = ReplayEngine<QueueReaderAdapter>;
+
+/// Adapter to make QueueReader work with StreamReader trait
+pub struct QueueReaderAdapter {
+    reader: QueueReader,
+}
+
+impl QueueReaderAdapter {
+    pub fn open(path: impl AsRef<Path>, reader_name: &str) -> Result<Self> {
+        let reader = Queue::open_subscriber(path.as_ref(), reader_name)?;
+        Ok(Self { reader })
+    }
+
+    pub fn open_with_config(
+        path: impl AsRef<Path>,
+        reader_name: &str,
+        config: ReaderConfig,
+    ) -> Result<Self> {
+        let reader = Queue::open_subscriber_with_config(path.as_ref(), reader_name, config)?;
+        Ok(Self { reader })
+    }
+}
+
+impl StreamReader for QueueReaderAdapter {
+    fn next<'a>(&'a mut self) -> Result<Option<StreamMessageRef<'a>>> {
+        let msg = self.reader.next()?;
+        Ok(msg.map(StreamMessageRef::from))
+    }
+
+    fn wait(&mut self, timeout: Option<std::time::Duration>) -> Result<()> {
+        Ok(self.reader.wait(timeout)?)
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        Ok(self.reader.commit()?)
+    }
+
+    fn set_wait_strategy(&mut self, strategy: WaitStrategy) {
+        self.reader.set_wait_strategy(strategy);
+    }
+
+    fn seek_seq(&mut self, seq: u64) -> Result<bool> {
+        Ok(self.reader.seek_seq(seq)?)
+    }
+
+    fn seek_timestamp(&mut self, target_ts_ns: u64) -> Result<bool> {
+        Ok(self.reader.seek_timestamp(target_ts_ns)?)
+    }
+}
+
 // #[cfg(feature = "storage")]
 // pub type ArchiveReplayEngine = ReplayEngine<crate::stream::archive::ArchiveStream>; // REMOVED: storage module deleted
 
-impl ReplayEngine<LiveStream> {
+impl ReplayEngine<QueueReaderAdapter> {
     pub fn open(path: impl AsRef<Path>, reader: &str) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
-        let reader = LiveStream::open(&root, reader)?;
+        let reader = QueueReaderAdapter::open(&root, reader)?;
         Ok(Self::new(root, reader))
     }
 
@@ -49,7 +97,7 @@ impl ReplayEngine<LiveStream> {
         config: ReaderConfig,
     ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
-        let reader = LiveStream::open_with_config(&root, reader, config)?;
+        let reader = QueueReaderAdapter::open_with_config(&root, reader, config)?;
         Ok(Self::new(root, reader))
     }
 }

@@ -8,4 +8,4 @@ pub use engine::{
 };
 
 // Re-export shared types
-pub use crate::stream::sequencer::GapPolicy;
+pub use crate::core::sequencer::GapPolicy;

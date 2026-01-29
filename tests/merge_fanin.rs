@@ -1,4 +1,4 @@
-use chronicle::stream::merge::FanInReader;
+use chronicle::ipc::pubsub::Subscriber;
 use chronicle::core::{Queue, WriterConfig};
 use tempfile::tempdir;
 
@@ -40,10 +40,10 @@ fn merge_orders_by_timestamp_and_source() {
         .append_with_timestamp(1, b"b2", 300)
         .expect("append b2");
 
-    let reader_a = Queue::open_subscriber(&queue_a_path, "fanin").expect("reader a");
-    let reader_b = Queue::open_subscriber(&queue_b_path, "fanin").expect("reader b");
+    let reader_a = Subscriber::open(&queue_a_path, "fanin").expect("reader a");
+    let reader_b = Subscriber::open(&queue_b_path, "fanin").expect("reader b");
 
-    let mut fanin = FanInReader::new(vec![reader_a, reader_b]);
+    let mut fanin = chronicle::ipc::FanInReader::new(vec![reader_a, reader_b]).expect("fanin");
     let mut seen = Vec::new();
 
     while let Some(message) = fanin.next().expect("fanin next") {
@@ -71,7 +71,7 @@ fn merge_returns_none_when_empty() {
     let queue_a_path = dir.path().join("queue_a");
     let queue_b_path = dir.path().join("queue_b");
 
-    let reader_a = Queue::open_subscriber(&queue_a_path, "fanin");
+    let reader_a = Subscriber::open(&queue_a_path, "fanin");
     assert!(reader_a.is_err());
 
     let _writer_a = Queue::open_publisher_with_config(
@@ -91,10 +91,10 @@ fn merge_returns_none_when_empty() {
     )
     .expect("writer b");
 
-    let reader_a = Queue::open_subscriber(&queue_a_path, "fanin").expect("reader a");
-    let reader_b = Queue::open_subscriber(&queue_b_path, "fanin").expect("reader b");
+    let reader_a = Subscriber::open(&queue_a_path, "fanin").expect("reader a");
+    let reader_b = Subscriber::open(&queue_b_path, "fanin").expect("reader b");
 
-    let mut fanin = FanInReader::new(vec![reader_a, reader_b]);
+    let mut fanin = chronicle::ipc::FanInReader::new(vec![reader_a, reader_b]).expect("fanin");
     let message = fanin.next().expect("fanin next");
     assert!(message.is_none());
 }
