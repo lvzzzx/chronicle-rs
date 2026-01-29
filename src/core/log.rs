@@ -86,6 +86,7 @@ fn align_up(val: usize, align: usize) -> usize {
 /// ```
 pub struct LogWriter {
     writer: SegmentWriter,
+    segment_size: usize,
 }
 
 impl LogWriter {
@@ -114,7 +115,10 @@ impl LogWriter {
         let segment_id = next_segment_id(dir)?;
         let writer = SegmentWriter::new(dir, segment_id, segment_size);
 
-        Ok(Self { writer })
+        Ok(Self {
+            writer,
+            segment_size,
+        })
     }
 
     /// Returns the number of segments written (sealed and published).
@@ -140,7 +144,7 @@ impl LogWriter {
     ///
     /// # Errors
     ///
-    /// - `Error::PayloadTooLarge`: Payload exceeds maximum size
+    /// - `Error::PayloadTooLarge`: Payload exceeds maximum size or segment capacity
     /// - `Error::Io`: Failed to write to segment
     pub fn append(&mut self, type_id: u16, timestamp_ns: u64, payload: &[u8]) -> Result<()> {
         let payload_len = payload.len();
@@ -150,7 +154,13 @@ impl LogWriter {
 
         let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
 
-        // Roll if record doesn't fit
+        // Check if record would fit in any segment (not just current)
+        let max_record_size = self.segment_size.saturating_sub(SEG_DATA_OFFSET);
+        if record_len > max_record_size {
+            return Err(Error::PayloadTooLarge);
+        }
+
+        // Roll if record doesn't fit in current segment
         if self.writer.needs_roll(record_len) {
             self.writer.roll()?;
         }
@@ -475,5 +485,41 @@ mod tests {
         let huge_payload = vec![0u8; MAX_PAYLOAD_LEN + 1];
         let result = writer.append(0x01, 1000, &huge_payload);
         assert!(matches!(result, Err(Error::PayloadTooLarge)));
+    }
+
+    #[test]
+    fn test_log_no_segment_gap_on_oversized_payload() {
+        let dir = TempDir::new().unwrap();
+
+        // Small segment size to make testing easier
+        let segment_size = 8192;
+        let mut writer = LogWriter::open(dir.path(), segment_size).unwrap();
+
+        // Write a normal record to segment 0
+        writer.append(0x01, 1000, b"normal").unwrap();
+
+        // Try to write a payload that's too large for any segment
+        // (fits under MAX_PAYLOAD_LEN but not in segment capacity)
+        let oversized = vec![0u8; segment_size - SEG_DATA_OFFSET + 100];
+        let result = writer.append(0x02, 2000, &oversized);
+        assert!(matches!(result, Err(Error::PayloadTooLarge)));
+
+        // Write another normal record - should still be in segment 0
+        writer.append(0x03, 3000, b"after_error").unwrap();
+        writer.finish().unwrap();
+
+        // Should only have created segment 0 (no gap from failed append)
+        let mut reader = LogReader::open(dir.path()).unwrap();
+        let segments = reader.segments();
+        assert_eq!(segments, &[0], "Should only have segment 0, no gaps");
+
+        // Verify we can read both successful records
+        let msg1 = reader.next().unwrap().unwrap();
+        assert_eq!(msg1.type_id, 0x01);
+
+        let msg2 = reader.next().unwrap().unwrap();
+        assert_eq!(msg2.type_id, 0x03);
+
+        assert!(reader.next().unwrap().is_none());
     }
 }

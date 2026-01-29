@@ -247,6 +247,10 @@ impl SegmentCursor {
     /// Load the next segment from the list.
     ///
     /// Returns `false` if no more segments are available.
+    ///
+    /// Note: This method preserves the current offset value. The offset should be
+    /// set by the caller (either `advance_segment()` for sequential reading or
+    /// `seek_segment()` for random access).
     fn load_next_segment(&mut self) -> Result<bool> {
         if self.current_segment_idx >= self.segments.len() {
             return Ok(false);
@@ -264,7 +268,7 @@ impl SegmentCursor {
 
         let mmap = open_segment(&self.dir, segment_id, self.segment_size)?;
         self.current_mmap = Some(mmap);
-        self.offset = SEG_DATA_OFFSET;
+        // Don't reset offset here - it's already set by advance_segment() or seek_segment()
 
         Ok(true)
     }
@@ -392,6 +396,38 @@ mod tests {
         let msg = cursor.next_header().unwrap().unwrap();
         assert_eq!(msg.type_id, 0x1001);
         assert_eq!(msg.timestamp_ns, 2000);
+    }
+
+    #[test]
+    fn test_cursor_seek_to_mid_segment_offset() {
+        let dir = TempDir::new().unwrap();
+
+        // Write multiple records to a single segment
+        let mut writer = SegmentWriter::new(dir.path(), 0, 8192);
+        writer.append(0x1000, 1000, b"first").unwrap();
+        writer.append(0x1001, 2000, b"second").unwrap();
+        writer.append(0x1002, 3000, b"third").unwrap();
+        writer.finish().unwrap();
+
+        // Create cursor and read first record to get its offset
+        let segments = discover_segments(dir.path()).unwrap();
+        let mut cursor = SegmentCursor::open(dir.path(), segments.clone(), 8192);
+
+        let _first = cursor.next_header().unwrap().unwrap();
+        let second_offset = cursor.current_offset();
+
+        // Now seek to the second record's offset
+        cursor.seek_segment(0, second_offset).unwrap();
+
+        // Should read the second record (not restart at beginning)
+        let msg = cursor.next_header().unwrap().unwrap();
+        assert_eq!(msg.type_id, 0x1001);
+        assert_eq!(msg.timestamp_ns, 2000);
+
+        // And then the third
+        let msg = cursor.next_header().unwrap().unwrap();
+        assert_eq!(msg.type_id, 0x1002);
+        assert_eq!(msg.timestamp_ns, 3000);
     }
 
     #[test]
