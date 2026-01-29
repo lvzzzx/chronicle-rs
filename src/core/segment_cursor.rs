@@ -34,6 +34,7 @@ pub struct MessageRef {
     pub type_id: u16,
     pub payload_offset: usize,
     pub payload_len: usize,
+    pub checksum: u32,
 }
 
 /// Core segment cursor for sequential reading across segments.
@@ -111,6 +112,11 @@ impl SegmentCursor {
         self.offset
     }
 
+    /// Get the list of segment IDs in this cursor.
+    pub fn segments(&self) -> &[u64] {
+        &self.segments
+    }
+
     /// Read the next message header from the segments.
     ///
     /// Returns `None` when all segments are exhausted.
@@ -179,6 +185,7 @@ impl SegmentCursor {
                 type_id: header.type_id,
                 payload_offset: start + HEADER_SIZE,
                 payload_len,
+                checksum: header.checksum,
             }));
         }
     }

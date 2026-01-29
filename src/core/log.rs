@@ -52,11 +52,11 @@
 //! # Ok::<(), chronicle::core::Error>(())
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::core::header::{MessageHeader, HEADER_SIZE, MAX_PAYLOAD_LEN, RECORD_ALIGN};
-use crate::core::mmap::MmapFile;
-use crate::core::segment_store::{discover_segments, next_segment_id, segment_path, DEFAULT_SEGMENT_SIZE, SEG_DATA_OFFSET};
+use crate::core::segment_cursor::SegmentCursor;
+use crate::core::segment_store::{discover_segments, next_segment_id, DEFAULT_SEGMENT_SIZE, SEG_DATA_OFFSET};
 use crate::core::segment_writer::SegmentWriter;
 use crate::core::{Error, MessageView, Result};
 
@@ -187,6 +187,8 @@ impl LogWriter {
 ///
 /// Reads records sequentially across multiple segments in timestamp order.
 ///
+/// Built on top of `SegmentCursor` primitive.
+///
 /// # Example
 ///
 /// ```no_run
@@ -199,12 +201,7 @@ impl LogWriter {
 /// # Ok::<(), chronicle::core::Error>(())
 /// ```
 pub struct LogReader {
-    dir: PathBuf,
-    segments: Vec<u64>,
-    current_segment_idx: usize,
-    current_mmap: Option<MmapFile>,
-    offset: usize,
-    header_buf: [u8; HEADER_SIZE],
+    cursor: SegmentCursor,
     payload_buf: Vec<u8>,
 }
 
@@ -212,12 +209,13 @@ impl LogReader {
     /// Open a log reader for the specified directory.
     ///
     /// Discovers all segment files and prepares for sequential reading.
+    /// Automatically detects segment size from the first segment.
     ///
     /// # Errors
     ///
     /// - `Error::Io`: Failed to read directory or open segments
     pub fn open(dir: impl AsRef<Path>) -> Result<Self> {
-        let dir = dir.as_ref().to_path_buf();
+        let dir = dir.as_ref();
 
         if !dir.exists() {
             return Err(Error::Io(std::io::Error::new(
@@ -226,16 +224,23 @@ impl LogReader {
             )));
         }
 
-        let mut segments = discover_segments(&dir)?;
+        let mut segments = discover_segments(dir)?;
         segments.sort_unstable();
 
+        // Discover segment size from first segment (default to DEFAULT_SEGMENT_SIZE if no segments)
+        let segment_size = if !segments.is_empty() {
+            use crate::core::segment_store::segment_path;
+            let first_segment_path = segment_path(dir, segments[0]);
+            let metadata = std::fs::metadata(&first_segment_path)?;
+            metadata.len() as usize
+        } else {
+            DEFAULT_SEGMENT_SIZE
+        };
+
+        let cursor = SegmentCursor::open(dir, segments, segment_size);
+
         Ok(Self {
-            dir,
-            segments,
-            current_segment_idx: 0,
-            current_mmap: None,
-            offset: SEG_DATA_OFFSET,
-            header_buf: [0u8; HEADER_SIZE],
+            cursor,
             payload_buf: vec![0u8; 8192],
         })
     }
@@ -244,80 +249,36 @@ impl LogReader {
     ///
     /// Returns `None` when reaching the end of all segments.
     pub fn next(&mut self) -> Result<Option<MessageView<'_>>> {
-        loop {
-            // Load next segment if needed
-            if self.current_mmap.is_none() {
-                if !self.load_next_segment()? {
-                    return Ok(None); // No more segments
-                }
-            }
+        // Get next message header from cursor
+        let msg_ref = match self.cursor.next_header()? {
+            Some(m) => m,
+            None => return Ok(None),
+        };
 
-            let mmap = self.current_mmap.as_ref().unwrap();
-            let start = self.offset;
-
-            // Check if we can read a header
-            if start + HEADER_SIZE > mmap.len() {
-                // End of current segment, try next
-                self.current_mmap = None;
-                self.current_segment_idx += 1;
-                self.offset = SEG_DATA_OFFSET;
-                continue;
-            }
-
-            // Read header
-            self.header_buf.copy_from_slice(mmap.range(start, HEADER_SIZE)?);
-
-            // Check commit_len first (without validating version)
-            let commit_len = MessageHeader::load_commit_len(&self.header_buf[0] as *const u8);
-            if commit_len == 0 {
-                // Uncommitted or end of segment
-                self.current_mmap = None;
-                self.current_segment_idx += 1;
-                self.offset = SEG_DATA_OFFSET;
-                continue;
-            }
-
-            // Now parse the full header
-            let header = MessageHeader::from_bytes(&self.header_buf)?;
-
-            let payload_len = MessageHeader::payload_len_from_commit(commit_len)?;
-
-            // Check if we can read the full record
-            let record_len = align_up(HEADER_SIZE + payload_len, RECORD_ALIGN);
-            if start + record_len > mmap.len() {
-                // Corrupted or truncated
-                self.current_mmap = None;
-                self.current_segment_idx += 1;
-                self.offset = SEG_DATA_OFFSET;
-                continue;
-            }
-
-            // Ensure payload buffer is large enough
-            if self.payload_buf.len() < payload_len {
-                self.payload_buf.resize(payload_len, 0);
-            }
-
-            // Read payload
-            if payload_len > 0 {
-                self.payload_buf[..payload_len]
-                    .copy_from_slice(mmap.range(start + HEADER_SIZE, payload_len)?);
-            }
-
-            // Verify checksum
-            let computed_checksum = MessageHeader::crc32(&self.payload_buf[..payload_len]);
-            if header.checksum != computed_checksum {
-                return Err(Error::Corrupt("checksum mismatch"));
-            }
-
-            self.offset += record_len;
-
-            return Ok(Some(MessageView {
-                seq: header.seq,
-                timestamp_ns: header.timestamp_ns,
-                type_id: header.type_id,
-                payload: &self.payload_buf[..payload_len],
-            }));
+        // Ensure payload buffer is large enough
+        if self.payload_buf.len() < msg_ref.payload_len {
+            self.payload_buf.resize(msg_ref.payload_len, 0);
         }
+
+        // Read payload into buffer
+        self.cursor.read_payload(
+            msg_ref.payload_offset,
+            msg_ref.payload_len,
+            &mut self.payload_buf,
+        )?;
+
+        // Verify checksum
+        let computed_checksum = MessageHeader::crc32(&self.payload_buf[..msg_ref.payload_len]);
+        if msg_ref.checksum != computed_checksum {
+            return Err(Error::Corrupt("checksum mismatch"));
+        }
+
+        Ok(Some(MessageView {
+            seq: msg_ref.seq,
+            timestamp_ns: msg_ref.timestamp_ns,
+            type_id: msg_ref.type_id,
+            payload: &self.payload_buf[..msg_ref.payload_len],
+        }))
     }
 
     /// Seek to a specific segment.
@@ -328,43 +289,12 @@ impl LogReader {
     ///
     /// - `Error::Unsupported`: Segment ID not found
     pub fn seek_segment(&mut self, segment_id: u64) -> Result<()> {
-        let idx = self
-            .segments
-            .iter()
-            .position(|&id| id == segment_id)
-            .ok_or(Error::Unsupported("segment not found"))?;
-
-        self.current_segment_idx = idx;
-        self.current_mmap = None;
-        self.offset = SEG_DATA_OFFSET;
-        Ok(())
+        self.cursor.seek_segment(segment_id, SEG_DATA_OFFSET)
     }
 
     /// Returns the list of segment IDs in this log.
     pub fn segments(&self) -> &[u64] {
-        &self.segments
-    }
-
-    fn load_next_segment(&mut self) -> Result<bool> {
-        if self.current_segment_idx >= self.segments.len() {
-            return Ok(false);
-        }
-
-        let segment_id = self.segments[self.current_segment_idx];
-        let path = segment_path(&self.dir, segment_id);
-
-        if !path.exists() {
-            // Skip missing segments
-            self.current_segment_idx += 1;
-            self.offset = SEG_DATA_OFFSET;
-            return self.load_next_segment();
-        }
-
-        let mmap = MmapFile::open(&path)?;
-        self.current_mmap = Some(mmap);
-        self.offset = SEG_DATA_OFFSET;
-
-        Ok(true)
+        self.cursor.segments()
     }
 }
 
