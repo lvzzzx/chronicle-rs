@@ -12,8 +12,6 @@ pub mod venues;
 #[cfg(feature = "bus")]
 pub mod ipc;
 #[cfg(feature = "bus")]
-pub mod layout;
-#[cfg(feature = "bus")]
 pub mod trading;
 #[cfg(feature = "protocol")]
 pub mod protocol;

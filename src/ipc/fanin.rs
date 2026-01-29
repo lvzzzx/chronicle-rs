@@ -34,38 +34,6 @@
 //!
 //! For zero-copy fanin on live queues with internal buffer access, see
 //! `crate::stream::merge::FanInReader`.
-//!
-//! # Example: Router Fan-In
-//!
-//! ```no_run
-//! use chronicle::ipc::fanin::FanInReader;
-//! use chronicle::ipc::pubsub::Subscriber;
-//! use chronicle::layout::IpcLayout;
-//!
-//! let layout = IpcLayout::new("/var/lib/hft_bus");
-//!
-//! // Open all strategy order queues
-//! let sub_a = Subscriber::open(
-//!     layout.orders().strategy_endpoints(&"strategy_a".into())?.orders_out,
-//!     "router"
-//! )?;
-//! let sub_b = Subscriber::open(
-//!     layout.orders().strategy_endpoints(&"strategy_b".into())?.orders_out,
-//!     "router"
-//! )?;
-//!
-//! let mut fanin = FanInReader::new(vec![sub_a, sub_b])?;
-//!
-//! // Process orders in global timestamp order
-//! loop {
-//!     while let Some(msg) = fanin.next()? {
-//!         println!("Order from source {}: {:?}", msg.source, msg.payload);
-//!         fanin.commit(msg.source)?;
-//!     }
-//!     fanin.wait(None)?;
-//! }
-//! # Ok::<(), chronicle::core::Error>(())
-//! ```
 
 use std::time::Duration;
 
