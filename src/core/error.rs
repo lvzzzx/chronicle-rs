@@ -10,6 +10,7 @@ pub enum Error {
     PayloadTooLarge,
     QueueFull,
     WriterAlreadyActive,
+    InvalidPartition(String),
 }
 
 impl fmt::Display for Error {
@@ -23,6 +24,7 @@ impl fmt::Display for Error {
             Error::PayloadTooLarge => write!(f, "payload too large"),
             Error::QueueFull => write!(f, "queue full"),
             Error::WriterAlreadyActive => write!(f, "writer already active"),
+            Error::InvalidPartition(msg) => write!(f, "invalid partition: {msg}"),
         }
     }
 }

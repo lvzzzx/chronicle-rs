@@ -4,6 +4,7 @@
 //! document and will be filled in during subsequent phases.
 
 pub mod clock;
+pub mod compression;
 pub mod control;
 pub mod error;
 pub mod header;
